@@ -52,7 +52,7 @@ class TokenExplorer(App):
                 ("p", "toggle_layer_display", "Layer")]
     
     def __init__(self, prompt=EXAMPLE_PROMPT, use_bf16=False):
-        super().__init__()
+        super().__init__(title=f"TokenExplorer - {MODEL_NAME}")
         # Add support for multiple prompts.
         self.prompts = [prompt]
         self.prompt_index = 0
