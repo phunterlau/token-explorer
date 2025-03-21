@@ -276,7 +276,7 @@ if __name__ == "__main__":
     if args.input:
         try:
             with open(args.input, 'r') as f:
-                prompt = f.read().strip()
+                prompt = f.read()
         except FileNotFoundError:
             print(f"Error: Could not find input file '{args.input}'")
             sys.exit(1)
