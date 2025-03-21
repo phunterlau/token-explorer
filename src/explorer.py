@@ -48,6 +48,34 @@ class Explorer:
         self.prompt_tokens = self.tokenizer.encode(prompt_text)
         return self
     
+    def _calculate_layer_correlation(self, token_id, layer_probs):
+        """
+        Calculate correlation score for each layer for a given token.
+        Uses same approach as score_example.py's toxic_scores, but for a single token.
+        Higher score means the layer more strongly predicts this token.
+        
+        Args:
+            token_id: The token ID to calculate correlation for
+            layer_probs: List of probability distributions from each layer
+            
+        Returns:
+            List of correlation scores for each layer
+        """
+        # Calculate correlation as probability of token at each layer
+        # This matches score_example.py's approach of summing probabilities
+        # for target tokens, but for a single token
+        correlations = []
+        for layer_prob in layer_probs:
+            # Get probability for this token at this layer
+            layer_token_prob = layer_prob[token_id].item()
+            correlations.append(layer_token_prob)
+        
+        # Normalize correlations to [0,1] range
+        max_corr = max(correlations)
+        if max_corr > 0:
+            correlations = [c/max_corr for c in correlations]
+            
+        return correlations
 
     def get_prompt_token_probabilities(self):
         """
@@ -125,7 +153,6 @@ class Explorer:
             normalized_entropies.append(normalized_entropy)
         
         return normalized_entropies
-
 
     def get_prompt(self):
         """
@@ -249,11 +276,14 @@ class Explorer:
             for idx, prob in enumerate(next_token_probs):
                 token = self._format_special_token(self.tokenizer.decode(idx))
                 if search.lower() in token.lower():
+                    # Calculate layer correlations
+                    correlations = self._calculate_layer_correlation(idx, layer_probs)
                     matching_tokens.append({
                         "token_id": idx,
                         "token": token,
                         "probability": prob.item(),
-                    "layer_probs": [layer_prob[idx].item() for layer_prob in layer_probs]
+                        "layer_probs": [layer_prob[idx].item() for layer_prob in layer_probs],
+                        "layer_correlations": correlations
                     })
             
             # Sort by probability and take top n
@@ -266,11 +296,14 @@ class Explorer:
             results = []
             for prob, idx in zip(top_probs, top_indices):
                 token = self._format_special_token(self.tokenizer.decode(idx))
+                # Calculate layer correlations
+                correlations = self._calculate_layer_correlation(idx, layer_probs)
                 results.append({
                     "token": token,
                     "token_id": idx.item(),
                     "probability": prob.item(),
-                    "layer_probs": [layer_prob[idx].item() for layer_prob in layer_probs]
+                    "layer_probs": [layer_prob[idx].item() for layer_prob in layer_probs],
+                    "layer_correlations": correlations
                 })
                 
             return results

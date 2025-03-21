@@ -92,6 +92,32 @@ You can simply press `e` again to enable the entropy view.
 
 Pressing `e` again will return you back to the default view.
 
+### Layer Analysis
+
+Token Explorer provides two ways to analyze how predictions evolve through the model's layers, toggled with the `p` key:
+
+1. Layer Probabilities (first press):
+   - Shows raw probability values for the token at each layer
+   - Red (0.0) to blue (1.0) color scale
+   - Helps visualize how strongly each layer predicts the token
+   - Useful for understanding prediction strength across layers
+
+2. Layer Correlations (second press):
+   - Shows normalized prediction values for each layer
+   - Values scaled to [0,1] range for easier visualization
+   - Red (0.0) to blue (1.0) color scale
+   - Helps understand how prediction evolves through the model
+
+For ML researchers:
+- Layer probabilities show the direct softmax outputs at each layer, revealing how the model's confidence in a token changes through the network
+- Layer correlations are normalized to highlight relative changes in prediction strength, making it easier to identify which layers contribute most to the final prediction
+- The progression through layers can reveal interesting patterns:
+  * Early layers may show diffuse probabilities across many tokens
+  * Middle layers often show emerging preferences
+  * Final layers typically converge on the chosen token
+
+Press `p` again to turn off layer visualization.
+
 ## Example Workflow
 
 Let's try to understand our GSM8K prompt a bit better. The plaintext prompt is:

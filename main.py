@@ -36,7 +36,8 @@ class TokenExplorer(App):
 
     display_modes = cycle(["prompt", "prob", "entropy"])
     display_mode = reactive(next(display_modes))
-    show_layer_probs = reactive(True)  # Toggle for layer probability display
+    layer_display_mode = cycle(["none", "prob", "corr"])  # None, probabilities, correlations
+    current_layer_mode = reactive(next(layer_display_mode))
 
     BINDINGS = [("e", "change_display_mode", "Mode"),
                 ("left,h", "pop_token", "Back"),
@@ -48,7 +49,7 @@ class TokenExplorer(App):
                 ("x", "save_prompt", "Save"),
                 ("j", "select_next", "Down"),
                 ("k", "select_prev", "Up"),
-                ("p", "toggle_layer_probs", "Layer")]
+                ("p", "toggle_layer_display", "Layer")]
     
     def __init__(self, prompt=EXAMPLE_PROMPT, use_bf16=False):
         super().__init__()
@@ -63,30 +64,39 @@ class TokenExplorer(App):
         self.selected_row = 0  # Track currently selected token row
     
     def _prob_to_color(self, prob, max_prob):
-        """Convert probability to a color (red to green)"""
-        # Scale probability by max value (but cap at 1.0)
-        scaled_prob = min(prob / (max_prob * 1.1), 1.0)
-        return f"#{int(255 * (1 - scaled_prob)):02x}{int(255 * scaled_prob):02x}00"
+        """Convert probability to a color (red to blue)"""
+        # Scale probability by max value
+        scaled_prob = min(prob / max_prob, 1.0)
+        # Red (low) to blue (high)
+        return f"#{int(255 * (1 - scaled_prob)):02x}00{int(255 * scaled_prob):02x}"
 
-    def _get_max_layer_prob(self, tokens):
-        """Get maximum layer probability across all tokens"""
-        return max(max(token["layer_probs"]) for token in tokens)
+    def _get_max_layer_value(self, tokens):
+        """Get maximum layer value across all tokens"""
+        if self.current_layer_mode == "corr":
+            return max(max(token["layer_correlations"]) for token in tokens)
+        elif self.current_layer_mode == "prob":
+            return max(max(token["layer_probs"]) for token in tokens)
+        return 0
 
-    def _layer_probs_to_heatmap(self, layer_probs, max_prob):
-        """Convert layer probabilities to a heatmap string"""
+    def _layer_values_to_heatmap(self, token, max_val):
+        """Convert layer values to a heatmap string"""
+        if self.current_layer_mode == "none":
+            return ""
+            
         blocks = []
-        for prob in layer_probs:
-            color = self._prob_to_color(prob, max_prob)
+        values = token["layer_correlations"] if self.current_layer_mode == "corr" else token["layer_probs"]
+        for val in values:
+            color = self._prob_to_color(val, max_val)
             blocks.append(f"[on {color}] ")
         # Combine all blocks into a single string
         return "".join(blocks)
 
     def _top_tokens_to_rows(self, tokens):
-        # Get global max probability for consistent scaling
-        max_prob = self._get_max_layer_prob(tokens)
-        # Include layers column only if layer probabilities are shown
+        # Get global max value for consistent scaling
+        max_val = self._get_max_layer_value(tokens)
+        # Include layers column only if layer display is enabled
         headers = ["token_id", "token", "prob"]
-        if self.show_layer_probs:
+        if self.current_layer_mode != "none":
             headers.append("layers")
         
         rows = []
@@ -96,8 +106,8 @@ class TokenExplorer(App):
                 token["token"],
                 f"{token['probability']:.4f}"
             ]
-            if self.show_layer_probs:
-                row.append(self._layer_probs_to_heatmap(token["layer_probs"], max_prob))
+            if self.current_layer_mode != "none":
+                row.append(self._layer_values_to_heatmap(token, max_val))
             rows.append(tuple(row))
         
         return [tuple(headers)] + rows
@@ -114,7 +124,11 @@ class TokenExplorer(App):
         self.rows = self._top_tokens_to_rows(
             self.explorer.get_top_n_tokens(n=TOKENS_TO_SHOW)
             )
+        # Clear both columns and rows
         table.clear()
+        table.columns.clear()
+        # Add new columns and rows
+        table.add_columns(*self.rows[0])
         table.add_rows(self.rows[1:])
         # Reset cursor to top
         self.selected_row = 0
@@ -145,22 +159,23 @@ class TokenExplorer(App):
             prompt_legend = ""
         # Add layer heatmap legend if enabled
         layer_legend = ""
-        if self.show_layer_probs and len(self.rows) > 1:
+        if self.current_layer_mode != "none" and len(self.rows) > 1:
             num_layers = len(self.explorer.get_top_n_tokens(n=1)[0]["layer_probs"])
             # Add layer numbers
             layer_numbers = "".join([
                 f"[bold]{i+1}[/bold] " for i in range(num_layers)
             ])
-            # Get max probability across all tokens
+            # Get max value across all tokens
             tokens = self.explorer.get_top_n_tokens(n=TOKENS_TO_SHOW)
-            max_prob = self._get_max_layer_prob(tokens)
-            # Add probability scale legend with dynamic range
-            scale_points = [i * max_prob / 10 for i in range(11)]
-            prob_scale = "".join([
-                f"[on {self._prob_to_color(p, max_prob)}] [/on]"
+            max_val = self._get_max_layer_value(tokens)
+            # Add scale legend with dynamic range
+            scale_points = [i * max_val / 10 for i in range(11)]
+            scale = "".join([
+                f"[on {self._prob_to_color(p, max_val)}] [/on]"
                 for p in scale_points
             ])
-            layer_legend = f"[bold]Layers:[/bold] {layer_numbers}\n[bold]Layer prob:[/bold] {prob_scale} (0.0 → {max_prob*1.1:.3f})"
+            value_type = "Layer correlation" if self.current_layer_mode == "corr" else "Layer prob"
+            layer_legend = f"[bold]Layers:[/bold] {layer_numbers}\n[bold]{value_type}:[/bold] {scale} (0.0 → {max_val:.3f})"
 
         return dedent(f"""
 {prompt_text}
@@ -213,9 +228,9 @@ class TokenExplorer(App):
         self.display_mode = next(self.display_modes)
         self.query_one("#results", Static).update(self._render_prompt())
 
-    def action_toggle_layer_probs(self):
-        """Toggle layer probability display"""
-        self.show_layer_probs = not self.show_layer_probs
+    def action_toggle_layer_display(self):
+        """Toggle layer display mode (none -> probabilities -> correlations)"""
+        self.current_layer_mode = next(self.layer_display_mode)
         self._refresh_table()
 
     def action_pop_token(self):
