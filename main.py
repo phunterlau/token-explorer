@@ -49,13 +49,17 @@ class TokenExplorer(App):
                 ("x", "save_prompt", "Save"),
                 ("j", "select_next", "Down"),
                 ("k", "select_prev", "Up"),
-                ("p", "toggle_layer_display", "Layer")]
+                ("p", "toggle_layer_display", "Layer"),
+                ("ctrl+r", "reset_prompt", "Reset")]
+    
+    # No custom commands class needed
     
     def __init__(self, prompt=EXAMPLE_PROMPT, use_bf16=False):
         super().__init__()
         self.title = f"TokenExplorer - {MODEL_NAME}"
         # Add support for multiple prompts.
         self.prompts = [prompt]
+        self.original_prompt = prompt  # Store original prompt for reset
         self.prompt_index = 0
         self.explorer = Explorer(MODEL_NAME, use_bf16=use_bf16)
         self.explorer.set_prompt(prompt)
@@ -66,7 +70,7 @@ class TokenExplorer(App):
     
     def _prob_to_color(self, prob, max_prob):
         """Convert probability to a color (red to blue)"""
-        # Scale probability by max value
+        # Scale probability by max value (no extra scaling factor)
         scaled_prob = min(prob / max_prob, 1.0)
         # Red (low) to blue (high)
         return f"#{int(255 * (1 - scaled_prob)):02x}00{int(255 * scaled_prob):02x}"
@@ -169,7 +173,7 @@ class TokenExplorer(App):
             # Get max value across all tokens
             tokens = self.explorer.get_top_n_tokens(n=TOKENS_TO_SHOW)
             max_val = self._get_max_layer_value(tokens)
-            # Add scale legend with dynamic range
+            # Add scale legend with dynamic range (no extra scaling factor)
             scale_points = [i * max_val / 10 for i in range(11)]
             scale = "".join([
                 f"[on {self._prob_to_color(p, max_val)}] [/on]"
@@ -191,6 +195,7 @@ class TokenExplorer(App):
 """)
     
     def on_mount(self) -> None:
+        
         self.query_one("#results", Static).update(self._render_prompt())
         table = self.query_one(DataTable)
         table.add_columns(*self.rows[0])
@@ -266,6 +271,13 @@ class TokenExplorer(App):
             self.explorer.append_token(self.rows[table.cursor_row+1][0])
             self.prompts[self.prompt_index] = self.explorer.get_prompt()
             self._refresh_table()  # This will reset cursor position
+            
+    def action_reset_prompt(self):
+        """Reset prompt to original state"""
+        self.explorer.set_prompt(self.original_prompt)
+        self.prompts[self.prompt_index] = self.original_prompt
+        self.query_one("#results", Static).update(self._render_prompt())
+        self._refresh_table()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Token Explorer Application')

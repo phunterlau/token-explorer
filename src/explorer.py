@@ -6,6 +6,9 @@ The Explorer class manages the prompt internally and handles all interactions wi
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 import numpy as np
+import tomli
+from typing import Dict, List, Tuple
+from collections import OrderedDict
 
 class Explorer:
     def __init__(self, model_name="Qwen/Qwen2.5-0.5B", use_bf16=False):
@@ -36,7 +39,35 @@ class Explorer:
         # Initialize with empty prompt
         self.prompt_text = ""
         self.prompt_tokens = []
+        
+        # Load config
+        try:
+            with open("config.toml", "rb") as f:
+                config = tomli.load(f)
+                self.cache_size = config["display"]["cache_size"]
+        except:
+            self.cache_size = 100  # Default cache size
+        
+        # Cache for layer probabilities and correlations using OrderedDict for FIFO
+        # Key: tuple of prompt tokens
+        # Value: (layer_probs, token_correlations)
+        # where layer_probs is list of probability tensors
+        # and token_correlations is dict mapping token_id to correlation list
+        self._cache: OrderedDict[Tuple[int, ...], Tuple[List[torch.Tensor], Dict[int, List[float]]]] = OrderedDict()
     
+    def _manage_cache(self, key: Tuple[int, ...], value: Tuple[List[torch.Tensor], Dict[int, List[float]]]):
+        """
+        Add item to cache, removing oldest if at capacity.
+        
+        Args:
+            key: Cache key (token sequence)
+            value: Cache value (layer probabilities and correlations)
+        """
+        if len(self._cache) >= self.cache_size:
+            # Remove oldest item (first item in OrderedDict)
+            self._cache.popitem(last=False)
+        self._cache[key] = value
+        
     def set_prompt(self, prompt_text):
         """
         Set the current prompt text and update the encoded tokens.
@@ -193,7 +224,6 @@ class Explorer:
         # Pop last token and update prompt text
         last_token = self.prompt_tokens.pop()
         self.prompt_text = self.tokenizer.decode(self.prompt_tokens)
-        
         return last_token
     
     def append_token(self, token_id):
@@ -208,7 +238,6 @@ class Explorer:
         
         # Update prompt text to match new tokens
         self.prompt_text = self.tokenizer.decode(self.prompt_tokens)
-        
         return self
     
     def _format_special_token(self, token):
@@ -245,30 +274,46 @@ class Explorer:
         Returns:
             List of dicts containing token info and probabilities, sorted by probability
         """
-        # Convert token IDs to tensor and create input
-        input_ids = torch.tensor([self.prompt_tokens]).to(self.device)
-        
-        # Get model output with hidden states
-        with torch.no_grad():
-            outputs = self.model(input_ids, output_hidden_states=True)
+        # Check cache first
+        cache_key = tuple(self.prompt_tokens)
+        if cache_key in self._cache:
+            # Cache hit - Move accessed item to end (most recently used)
+            print(f"Cache hit for token sequence of length {len(cache_key)}")
+            layer_probs, token_correlations = self._cache.pop(cache_key)
+            self._cache[cache_key] = (layer_probs, token_correlations)
+            next_token_probs = layer_probs[-1]  # Final layer probabilities
+        else:
+            # Convert token IDs to tensor and create input
+            input_ids = torch.tensor([self.prompt_tokens]).to(self.device)
             
-        # Get logits and hidden states
-        next_token_logits = outputs.logits[0, -1, :]
-        hidden_states = outputs.hidden_states  # Tuple of tensors (num_layers + 1, batch, seq_len, hidden_size)
-        
-        # Get probabilities for final layer using softmax
-        next_token_probs = torch.nn.functional.softmax(next_token_logits, dim=0).to(torch.float32)
-        
-        # Calculate per-layer probabilities
-        # Skip first element as it's the embeddings, not a layer output
-        layer_probs = []
-        for layer_output in hidden_states[1:]:
-            # Get last token's hidden state
-            last_hidden = layer_output[0, -1, :]
-            # Project to vocab size using model's lm_head
-            layer_logits = self.model.lm_head(last_hidden.unsqueeze(0)).squeeze(0)
-            # Get probabilities
-            layer_probs.append(torch.nn.functional.softmax(layer_logits, dim=0).to(torch.float32))
+            # Get model output with hidden states
+            with torch.no_grad():
+                outputs = self.model(input_ids, output_hidden_states=True)
+                
+            # Get logits and hidden states
+            next_token_logits = outputs.logits[0, -1, :]
+            hidden_states = outputs.hidden_states  # Tuple of tensors (num_layers + 1, batch, seq_len, hidden_size)
+            
+            # Get probabilities for final layer using softmax
+            next_token_probs = torch.nn.functional.softmax(next_token_logits, dim=0).to(torch.float32)
+            
+            # Calculate per-layer probabilities
+            # Skip first element as it's the embeddings, not a layer output
+            layer_probs = []
+            for layer_output in hidden_states[1:]:
+                # Get last token's hidden state
+                last_hidden = layer_output[0, -1, :]
+                # Project to vocab size using model's lm_head
+                layer_logits = self.model.lm_head(last_hidden.unsqueeze(0)).squeeze(0)
+                # Get probabilities
+                layer_probs.append(torch.nn.functional.softmax(layer_logits, dim=0).to(torch.float32))
+            
+            # Initialize empty correlation cache
+            token_correlations = {}
+            
+            # Cache miss - Store in cache
+            print(f"Cache miss for token sequence of length {len(cache_key)}")
+            self._manage_cache(cache_key, (layer_probs, token_correlations))
         
         if search:
             # Filter tokens that contain the search string
@@ -276,8 +321,13 @@ class Explorer:
             for idx, prob in enumerate(next_token_probs):
                 token = self._format_special_token(self.tokenizer.decode(idx))
                 if search.lower() in token.lower():
-                    # Calculate layer correlations
-                    correlations = self._calculate_layer_correlation(idx, layer_probs)
+                    # Get correlations from cache or calculate and cache them
+                    if idx not in token_correlations:
+                        correlations = self._calculate_layer_correlation(idx, layer_probs)
+                        token_correlations[idx] = correlations
+                    else:
+                        correlations = token_correlations[idx]
+                        
                     matching_tokens.append({
                         "token_id": idx,
                         "token": token,
@@ -296,8 +346,13 @@ class Explorer:
             results = []
             for prob, idx in zip(top_probs, top_indices):
                 token = self._format_special_token(self.tokenizer.decode(idx))
-                # Calculate layer correlations
-                correlations = self._calculate_layer_correlation(idx, layer_probs)
+                # Get correlations from cache or calculate and cache them
+                if idx not in token_correlations:
+                    correlations = self._calculate_layer_correlation(idx, layer_probs)
+                    token_correlations[idx] = correlations
+                else:
+                    correlations = token_correlations[idx]
+                    
                 results.append({
                     "token": token,
                     "token_id": idx.item(),
