@@ -7,8 +7,9 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 import numpy as np
 import tomli
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 from collections import OrderedDict
+from functools import lru_cache
 
 class Explorer:
     def __init__(self, model_name="Qwen/Qwen2.5-0.5B", use_bf16=False):
@@ -21,11 +22,18 @@ class Explorer:
         """
         self.model_name = model_name
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        # Load model with bf16 if specified
+        # Load model with bf16 if specified and force eager attention implementation
         if use_bf16:
-            self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16)
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_name, 
+                torch_dtype=torch.bfloat16,
+                attn_implementation="eager"  # Force attention weights
+            )
         else:
-            self.model = AutoModelForCausalLM.from_pretrained(model_name)
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                attn_implementation="eager"  # Force attention weights
+            )
         
         # Auto select device (CUDA > MPS > CPU)
         if torch.cuda.is_available():
@@ -47,15 +55,26 @@ class Explorer:
                 self.cache_size = config["display"]["cache_size"]
         except:
             self.cache_size = 100  # Default cache size
+            
+        # Constants for token influence calculation
+        # Estimate total heads based on model architecture
+        try:
+            self.TOTAL_HEADS = self.model.config.num_hidden_layers * self.model.config.num_attention_heads
+        except:
+            # Fallback if config structure is different
+            self.TOTAL_HEADS = 24  # Default assumption
         
-        # Cache for layer probabilities and correlations using OrderedDict for FIFO
+        self.TOP_K_HEADS = min(32, self.TOTAL_HEADS)  # Can't exceed total heads
+        
+        # Cache for layer probabilities, correlations, and token influence using OrderedDict for FIFO
         # Key: tuple of prompt tokens
-        # Value: (layer_probs, token_correlations)
+        # Value: (layer_probs, token_correlations, token_influences)
         # where layer_probs is list of probability tensors
-        # and token_correlations is dict mapping token_id to correlation list
-        self._cache: OrderedDict[Tuple[int, ...], Tuple[List[torch.Tensor], Dict[int, List[float]]]] = OrderedDict()
+        # token_correlations is dict mapping token_id to correlation list
+        # token_influences is dict mapping token_id to influence list
+        self._cache: OrderedDict[Tuple[int, ...], Tuple[List[torch.Tensor], Dict[int, List[float]], Dict[int, List[float]]]] = OrderedDict()
     
-    def _manage_cache(self, key: Tuple[int, ...], value: Tuple[List[torch.Tensor], Dict[int, List[float]]]):
+    def _manage_cache(self, key: Tuple[int, ...], value: Tuple[List[torch.Tensor], Dict[int, List[float]], Dict[int, List[float]]]):
         """
         Add item to cache, removing oldest if at capacity.
         
@@ -262,6 +281,87 @@ class Explorer:
             return special_tokens[token]
         return token
 
+    def get_token_influence(self, token_id: int) -> List[float]:
+        """
+        Calculate the influence of each token in the prompt on the given token.
+        Uses cached values if available.
+        
+        Args:
+            token_id: The token ID to calculate influence for
+            
+        Returns:
+            List of influence scores for each token in the prompt
+        """
+        if not self.prompt_tokens:
+            return []
+        
+        # Check cache first
+        cache_key = tuple(self.prompt_tokens)
+        if cache_key in self._cache:
+            # Cache hit for this prompt
+            _, _, token_influences = self._cache[cache_key]
+            if token_id in token_influences:
+                # Cache hit for this token
+                return token_influences[token_id]
+        else:
+            # Cache miss for this prompt, initialize empty cache entry
+            token_influences = {}
+            
+        # Calculate influence scores
+        # Convert token IDs to tensor and create input
+        input_ids = torch.tensor([self.prompt_tokens]).to(self.device)
+        
+        # Get model output with attention
+        with torch.no_grad():
+            outputs = self.model(input_ids, output_attentions=True)
+            
+        # Stack attention from all layers [num_layers, batch, heads, seq, seq]
+        attentions = torch.stack(outputs.attentions)
+        
+        # Get dimensions
+        num_layers, _, num_heads, seq_len, _ = attentions.shape
+        
+        # Calculate head importance via attention variance
+        head_variance = attentions.var(dim=-1).mean(dim=(0, 3))  # [layers, heads]
+        flattened_variance = head_variance.flatten()
+        
+        # Safety check for TOP_K_HEADS
+        valid_k = min(self.TOP_K_HEADS, len(flattened_variance))
+        top_heads = torch.topk(flattened_variance, valid_k).indices
+        
+        # Filter and aggregate attention
+        filtered_attentions = []
+        for idx in top_heads:
+            layer_idx = idx // num_heads
+            head_idx = idx % num_heads
+            filtered_attentions.append(attentions[layer_idx, :, head_idx])
+        
+        # Aggregate attention for the last token
+        if filtered_attentions:
+            aggregated = torch.stack(filtered_attentions).mean(dim=0)[0, -1]  # [seq_len]
+            
+            # Get the influence scores - convert to float32 first to avoid BFloat16 error
+            influence_scores = aggregated.to(torch.float32).cpu().numpy()
+            
+            # Normalize to [0,1] range
+            if influence_scores.max() > 0:
+                influence_scores = influence_scores / influence_scores.max()
+                
+            result = influence_scores.tolist()
+        else:
+            # Return zeros if no filtered attentions
+            result = [0.0] * len(self.prompt_tokens)
+        
+        # Cache the result
+        token_influences[token_id] = result
+        
+        # Update cache if needed
+        if cache_key in self._cache:
+            layer_probs, token_correlations, _ = self._cache.pop(cache_key)
+            self._cache[cache_key] = (layer_probs, token_correlations, token_influences)
+        
+        return result
+    
     def get_top_n_tokens(self, n=5, search=""):
         """
         Get the top n most likely next tokens given the current prompt.
@@ -279,8 +379,8 @@ class Explorer:
         if cache_key in self._cache:
             # Cache hit - Move accessed item to end (most recently used)
             print(f"Cache hit for token sequence of length {len(cache_key)}")
-            layer_probs, token_correlations = self._cache.pop(cache_key)
-            self._cache[cache_key] = (layer_probs, token_correlations)
+            layer_probs, token_correlations, token_influences = self._cache.pop(cache_key)
+            self._cache[cache_key] = (layer_probs, token_correlations, token_influences)
             next_token_probs = layer_probs[-1]  # Final layer probabilities
         else:
             # Convert token IDs to tensor and create input
@@ -308,12 +408,13 @@ class Explorer:
                 # Get probabilities
                 layer_probs.append(torch.nn.functional.softmax(layer_logits, dim=0).to(torch.float32))
             
-            # Initialize empty correlation cache
+            # Initialize empty caches
             token_correlations = {}
+            token_influences = {}
             
             # Cache miss - Store in cache
             print(f"Cache miss for token sequence of length {len(cache_key)}")
-            self._manage_cache(cache_key, (layer_probs, token_correlations))
+            self._manage_cache(cache_key, (layer_probs, token_correlations, token_influences))
         
         if search:
             # Filter tokens that contain the search string
@@ -327,13 +428,17 @@ class Explorer:
                         token_correlations[idx] = correlations
                     else:
                         correlations = token_correlations[idx]
+                    
+                    # Calculate token influence
+                    influence = self.get_token_influence(idx)
                         
                     matching_tokens.append({
                         "token_id": idx,
                         "token": token,
                         "probability": prob.item(),
                         "layer_probs": [layer_prob[idx].item() for layer_prob in layer_probs],
-                        "layer_correlations": correlations
+                        "layer_correlations": correlations,
+                        "token_influence": influence
                     })
             
             # Sort by probability and take top n
@@ -352,13 +457,17 @@ class Explorer:
                     token_correlations[idx] = correlations
                 else:
                     correlations = token_correlations[idx]
+                
+                # Calculate token influence
+                influence = self.get_token_influence(idx)
                     
                 results.append({
                     "token": token,
                     "token_id": idx.item(),
                     "probability": prob.item(),
                     "layer_probs": [layer_prob[idx].item() for layer_prob in layer_probs],
-                    "layer_correlations": correlations
+                    "layer_correlations": correlations,
+                    "token_influence": influence
                 })
                 
             return results

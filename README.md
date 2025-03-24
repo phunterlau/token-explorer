@@ -92,6 +92,26 @@ You can simply press `e` again to enable the entropy view.
 
 ![Entropy](./imgs/entropies.png)
 
+Pressing `e` again will cycle to the token influence view.
+
+### Token Attention Influence
+
+The token attention influence view shows how much each token in the prompt influences the prediction of the next token. This is calculated using attention patterns from the model's heads, filtered to focus on the most important attention heads.
+
+How it works:
+1. Calculates attention variance across all model heads
+2. Selects top-K heads with highest variance (most informative)
+3. Extracts attention weights from these heads for the last token
+4. Aggregates and normalizes these weights to show influence scores
+
+In this view:
+- Each token is colored based on its attention influence
+- Green indicates low influence
+- Purple indicates high influence
+- The legend shows the influence scale from 0.0 to 1.0
+
+This visualization helps you understand which parts of the prompt are most important for the model's next token prediction. For example, you might see that the model pays more attention to recent tokens or to specific keywords in the prompt.
+
 Pressing `e` again will return you back to the default view.
 
 ### Layer Analysis

@@ -34,7 +34,7 @@ MAX_PROMPTS = config["prompt"]["max_prompts"]
 class TokenExplorer(App):
     """Main application class."""
 
-    display_modes = cycle(["prompt", "prob", "entropy"])
+    display_modes = cycle(["prompt", "prob", "entropy", "influence"])
     display_mode = reactive(next(display_modes))
     layer_display_mode = cycle(["none", "prob", "corr"])  # None, probabilities, correlations
     current_layer_mode = reactive(next(layer_display_mode))
@@ -140,6 +140,11 @@ class TokenExplorer(App):
         table.move_cursor(row=self.selected_row)
         self.query_one("#results", Static).update(self._render_prompt())
             
+    def _influence_to_color(self, influence):
+        """Convert influence score to a color (green to purple)"""
+        # Green (low) to purple (high)
+        return f"#{0:02x}{int(255 * (1 - influence)):02x}{int(255 * influence):02x}"
+    
     def _render_prompt(self):
         if self.display_mode == "entropy":
             entropy_legend = "".join([
@@ -159,6 +164,27 @@ class TokenExplorer(App):
             token_probs = self.explorer.get_prompt_token_probabilities()
             token_strings = self.explorer.get_prompt_tokens_strings()
             prompt_text = "".join(f"[on {probability_to_color(prob)}]{token}[/on]" for token, prob in zip(token_strings, token_probs))
+        elif self.display_mode == "influence":
+            # Get the top token to analyze influence
+            top_tokens = self.explorer.get_top_n_tokens(n=1)
+            if top_tokens:
+                top_token = top_tokens[0]
+                influence_scores = top_token["token_influence"]
+                
+                # Create influence legend
+                influence_legend = "".join([
+                    f"[on {self._influence_to_color(i/10)}] {i/10:.2f} [/on]"
+                    for i in range(11)
+                    ])
+                prompt_legend = f"[bold]Token attention influence:[/bold]{influence_legend}"
+                
+                # Create influence heatmap
+                token_strings = self.explorer.get_prompt_tokens_strings()
+                prompt_text = "".join(f"[on {self._influence_to_color(score)}]{token}[/on]" 
+                                     for token, score in zip(token_strings, influence_scores))
+            else:
+                prompt_text = self.explorer.get_prompt()
+                prompt_legend = "[bold]No tokens to analyze influence[/bold]"
         else:
             prompt_text = self.explorer.get_prompt()
             prompt_legend = ""
