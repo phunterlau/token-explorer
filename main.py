@@ -54,19 +54,21 @@ class TokenExplorer(App):
     
     # No custom commands class needed
     
-    def __init__(self, prompt=EXAMPLE_PROMPT, use_bf16=False):
+    def __init__(self, prompt=EXAMPLE_PROMPT, use_bf16=False, enable_layer_prob=False):
         super().__init__()
         self.title = f"TokenExplorer - {MODEL_NAME}"
         # Add support for multiple prompts.
         self.prompts = [prompt]
         self.original_prompt = prompt  # Store original prompt for reset
         self.prompt_index = 0
-        self.explorer = Explorer(MODEL_NAME, use_bf16=use_bf16)
+        self.explorer = Explorer(MODEL_NAME, use_bf16=use_bf16, enable_layer_prob=enable_layer_prob)
         self.explorer.set_prompt(prompt)
         self.rows = self._top_tokens_to_rows(
             self.explorer.get_top_n_tokens(n=TOKENS_TO_SHOW)
             )
         self.selected_row = 0  # Track currently selected token row
+        # Store layer probability enabled state for UI
+        self.layer_prob_enabled = enable_layer_prob
     
     def _prob_to_color(self, prob, max_prob):
         """Convert probability to a color (red to blue)"""
@@ -262,6 +264,19 @@ class TokenExplorer(App):
 
     def action_toggle_layer_display(self):
         """Toggle layer display mode (none -> probabilities -> correlations)"""
+        if not self.layer_prob_enabled:
+            # If layer probability calculations are disabled, show a message
+            self.query_one("#results", Static).update(
+                dedent(f"""
+                Layer probability calculations are disabled.
+                Run with --layer_prob flag to enable this feature.
+                
+                Example: python main.py --layer_prob
+                """)
+            )
+            return
+            
+        # If enabled, toggle as normal
         self.current_layer_mode = next(self.layer_display_mode)
         self._refresh_table()
 
@@ -309,6 +324,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Token Explorer Application')
     parser.add_argument('--input', '-i', type=str, help='Path to input text file')
     parser.add_argument('--bf16', action='store_true', help='Load model in bf16 precision')
+    parser.add_argument('--layer_prob', action='store_true', help='Enable layer probability and correlation calculations (may be computationally expensive)')
     args = parser.parse_args()
 
     prompt = EXAMPLE_PROMPT
@@ -322,5 +338,6 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Error reading file: {e}")
             sys.exit(1)
-    app = TokenExplorer(prompt=prompt, use_bf16=args.bf16)
+        
+    app = TokenExplorer(prompt=prompt, use_bf16=args.bf16, enable_layer_prob=args.layer_prob)
     app.run()

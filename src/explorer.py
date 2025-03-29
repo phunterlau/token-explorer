@@ -12,13 +12,14 @@ from collections import OrderedDict
 from functools import lru_cache
 
 class Explorer:
-    def __init__(self, model_name="Qwen/Qwen2.5-0.5B", use_bf16=False):
+    def __init__(self, model_name="Qwen/Qwen2.5-0.5B", use_bf16=False, enable_layer_prob=False):
         """
         Initialize the Explorer with a model name.
         
         Args:
             model_name: Name of the model to load (default "Qwen/Qwen2.5-0.5B")
             use_bf16: Whether to load model in bf16 precision (default False)
+            enable_layer_prob: Whether to enable layer probability and correlation calculations (default False)
         """
         self.model_name = model_name
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -48,13 +49,16 @@ class Explorer:
         self.prompt_text = ""
         self.prompt_tokens = []
         
-        # Load config
+        # Load cache size from config
         try:
             with open("config.toml", "rb") as f:
                 config = tomli.load(f)
                 self.cache_size = config["display"]["cache_size"]
         except:
             self.cache_size = 100  # Default cache size
+            
+        # Store layer probability setting
+        self.enable_layer_prob = enable_layer_prob
             
         # Constants for token influence calculation
         # Estimate total heads based on model architecture
@@ -376,45 +380,62 @@ class Explorer:
         """
         # Check cache first
         cache_key = tuple(self.prompt_tokens)
+        layer_probs = []
+        token_correlations = {}
+        token_influences = {}
+        
         if cache_key in self._cache:
             # Cache hit - Move accessed item to end (most recently used)
             print(f"Cache hit for token sequence of length {len(cache_key)}")
             layer_probs, token_correlations, token_influences = self._cache.pop(cache_key)
             self._cache[cache_key] = (layer_probs, token_correlations, token_influences)
-            next_token_probs = layer_probs[-1]  # Final layer probabilities
-        else:
+            next_token_probs = layer_probs[-1] if layer_probs else None  # Final layer probabilities
+        
+        # If not in cache or layer_probs is empty (when enable_layer_prob was previously False)
+        if not cache_key in self._cache or not layer_probs:
             # Convert token IDs to tensor and create input
             input_ids = torch.tensor([self.prompt_tokens]).to(self.device)
             
-            # Get model output with hidden states
+            # Determine if we need hidden states based on layer_prob setting
+            output_hidden_states = self.enable_layer_prob
+            
+            # Get model output
             with torch.no_grad():
-                outputs = self.model(input_ids, output_hidden_states=True)
+                if output_hidden_states:
+                    outputs = self.model(input_ids, output_hidden_states=True)
+                    hidden_states = outputs.hidden_states
+                else:
+                    outputs = self.model(input_ids)
                 
-            # Get logits and hidden states
+            # Get logits for next token prediction
             next_token_logits = outputs.logits[0, -1, :]
-            hidden_states = outputs.hidden_states  # Tuple of tensors (num_layers + 1, batch, seq_len, hidden_size)
             
             # Get probabilities for final layer using softmax
             next_token_probs = torch.nn.functional.softmax(next_token_logits, dim=0).to(torch.float32)
             
-            # Calculate per-layer probabilities
-            # Skip first element as it's the embeddings, not a layer output
-            layer_probs = []
-            for layer_output in hidden_states[1:]:
-                # Get last token's hidden state
-                last_hidden = layer_output[0, -1, :]
-                # Project to vocab size using model's lm_head
-                layer_logits = self.model.lm_head(last_hidden.unsqueeze(0)).squeeze(0)
-                # Get probabilities
-                layer_probs.append(torch.nn.functional.softmax(layer_logits, dim=0).to(torch.float32))
-            
-            # Initialize empty caches
-            token_correlations = {}
-            token_influences = {}
-            
-            # Cache miss - Store in cache
-            print(f"Cache miss for token sequence of length {len(cache_key)}")
-            self._manage_cache(cache_key, (layer_probs, token_correlations, token_influences))
+            # Calculate per-layer probabilities only if enabled
+            if self.enable_layer_prob:
+                # Skip first element as it's the embeddings, not a layer output
+                layer_probs = []
+                for layer_output in hidden_states[1:]:
+                    # Get last token's hidden state
+                    last_hidden = layer_output[0, -1, :]
+                    # Project to vocab size using model's lm_head
+                    layer_logits = self.model.lm_head(last_hidden.unsqueeze(0)).squeeze(0)
+                    # Get probabilities
+                    layer_probs.append(torch.nn.functional.softmax(layer_logits, dim=0).to(torch.float32))
+                
+                # Cache miss - Store in cache
+                print(f"Cache miss for token sequence of length {len(cache_key)}")
+                self._manage_cache(cache_key, (layer_probs, token_correlations, token_influences))
+            else:
+                # If layer probability calculation is disabled, use empty placeholders
+                # This ensures the returned token objects have the expected structure
+                layer_probs = []
+        
+        # Create placeholder values for when layer_prob is disabled
+        empty_layer_probs = [0.0]  # Single value placeholder
+        empty_correlations = [0.0]  # Single value placeholder
         
         if search:
             # Filter tokens that contain the search string
@@ -422,24 +443,40 @@ class Explorer:
             for idx, prob in enumerate(next_token_probs):
                 token = self._format_special_token(self.tokenizer.decode(idx))
                 if search.lower() in token.lower():
-                    # Get correlations from cache or calculate and cache them
-                    if idx not in token_correlations:
-                        correlations = self._calculate_layer_correlation(idx, layer_probs)
-                        token_correlations[idx] = correlations
-                    else:
-                        correlations = token_correlations[idx]
-                    
-                    # Calculate token influence
-                    influence = self.get_token_influence(idx)
+                    # Only calculate correlations if layer_prob is enabled
+                    if self.enable_layer_prob:
+                        # Get correlations from cache or calculate and cache them
+                        if idx not in token_correlations:
+                            correlations = self._calculate_layer_correlation(idx, layer_probs)
+                            token_correlations[idx] = correlations
+                        else:
+                            correlations = token_correlations[idx]
                         
-                    matching_tokens.append({
+                        # Calculate token influence
+                        influence = self.get_token_influence(idx)
+                    else:
+                        # Use placeholder values when disabled
+                        correlations = empty_correlations
+                        influence = [0.0] * len(self.prompt_tokens) if self.prompt_tokens else []
+                    
+                    # Create token object with appropriate values
+                    token_obj = {
                         "token_id": idx,
                         "token": token,
                         "probability": prob.item(),
-                        "layer_probs": [layer_prob[idx].item() for layer_prob in layer_probs],
-                        "layer_correlations": correlations,
                         "token_influence": influence
-                    })
+                    }
+                    
+                    # Add layer-specific data only if enabled
+                    if self.enable_layer_prob and layer_probs:
+                        token_obj["layer_probs"] = [layer_prob[idx].item() for layer_prob in layer_probs]
+                        token_obj["layer_correlations"] = correlations
+                    else:
+                        # Use placeholder values when disabled
+                        token_obj["layer_probs"] = empty_layer_probs
+                        token_obj["layer_correlations"] = empty_correlations
+                        
+                    matching_tokens.append(token_obj)
             
             # Sort by probability and take top n
             matching_tokens.sort(key=lambda x: x["probability"], reverse=True)
@@ -451,24 +488,41 @@ class Explorer:
             results = []
             for prob, idx in zip(top_probs, top_indices):
                 token = self._format_special_token(self.tokenizer.decode(idx))
-                # Get correlations from cache or calculate and cache them
-                if idx not in token_correlations:
-                    correlations = self._calculate_layer_correlation(idx, layer_probs)
-                    token_correlations[idx] = correlations
-                else:
-                    correlations = token_correlations[idx]
                 
-                # Calculate token influence
-                influence = self.get_token_influence(idx)
+                # Only calculate correlations if layer_prob is enabled
+                if self.enable_layer_prob:
+                    # Get correlations from cache or calculate and cache them
+                    if idx not in token_correlations:
+                        correlations = self._calculate_layer_correlation(idx, layer_probs)
+                        token_correlations[idx] = correlations
+                    else:
+                        correlations = token_correlations[idx]
                     
-                results.append({
+                    # Calculate token influence
+                    influence = self.get_token_influence(idx)
+                else:
+                    # Use placeholder values when disabled
+                    correlations = empty_correlations
+                    influence = [0.0] * len(self.prompt_tokens) if self.prompt_tokens else []
+                
+                # Create token object with appropriate values
+                token_obj = {
                     "token": token,
                     "token_id": idx.item(),
                     "probability": prob.item(),
-                    "layer_probs": [layer_prob[idx].item() for layer_prob in layer_probs],
-                    "layer_correlations": correlations,
                     "token_influence": influence
-                })
+                }
+                
+                # Add layer-specific data only if enabled
+                if self.enable_layer_prob and layer_probs:
+                    token_obj["layer_probs"] = [layer_prob[idx].item() for layer_prob in layer_probs]
+                    token_obj["layer_correlations"] = correlations
+                else:
+                    # Use placeholder values when disabled
+                    token_obj["layer_probs"] = empty_layer_probs
+                    token_obj["layer_correlations"] = empty_correlations
+                    
+                results.append(token_obj)
                 
             return results
 

@@ -36,6 +36,28 @@ You can also use the `--bf16` flag to load the model in bfloat16 precision, whic
 uv run main.py --bf16
 ```
 
+### Command-line Parameters
+
+The application supports several command-line parameters:
+
+- **`--input <path_to_file>`, `-i <path_to_file>`**: Specify a text file to use as the initial prompt
+- **`--bf16`**: Load the model in bfloat16 precision to reduce memory usage
+- **`--layer_prob`**: Enable layer probability and correlation calculations
+
+Layer probability and correlation calculations are **disabled by default** as they can be computationally expensive. These calculations analyze how token predictions evolve through each layer of the model, providing valuable insights for ML researchers but requiring significant additional computation.
+
+When enabled with the `--layer_prob` flag, you can use the 'p' hotkey to toggle between different layer visualization modes (none → probabilities → correlations → none).
+
+```bash
+# Enable layer probability and correlation calculations
+uv run main.py --layer_prob
+
+# Combine with other flags as needed
+uv run main.py --input my_prompt.txt --bf16 --layer_prob
+```
+
+**Performance Impact**: Enabling this feature may significantly increase memory usage and slow down token generation, especially for larger models. The exact impact depends on your hardware and the model size.
+
 ## Usage
 
 When you start the app you will see your prompt as well as a table of the top 30 tokens and their probabilities.
@@ -116,7 +138,9 @@ Pressing `e` again will return you back to the default view.
 
 ### Layer Analysis
 
-Token Explorer provides two ways to analyze how predictions evolve through the model's layers, toggled with the `p` key:
+Token Explorer provides two ways to analyze how predictions evolve through the model's layers, toggled with the `p` key. **Note: This feature is disabled by default** due to its computational expense. To enable it, run the app with the `--layer_prob` flag.
+
+When enabled, pressing `p` will cycle through:
 
 1. Layer Probabilities (first press):
    - Shows raw probability values for the token at each layer
@@ -139,6 +163,8 @@ For ML researchers:
   * Final layers typically converge on the chosen token
 
 Press `p` again to turn off layer visualization.
+
+If you try to use this feature without enabling it with the `--layer_prob` flag, you'll see a message explaining how to enable it.
 
 ## Example Workflow
 
@@ -183,4 +209,12 @@ You can see both that we *did* still get the correct answer, and that the path I
 
 ## Configuration
 
-The configuration is done in the `config.toml` file. The only thing you might want to change is the `model` section, which defaults to `Qwen/Qwen2.5-0.5B`. However Token Explorer is *far* from optimized for performance, so it's best to use a smaller model for now.
+The configuration is done in the `config.toml` file. Here are the key settings you can modify:
+
+- **Model**: The `model` section defaults to `Qwen/Qwen2.5-0.5B`. However, Token Explorer is *far* from optimized for performance, so it's best to use a smaller model for now.
+
+- **Display Settings**: 
+  - `tokens_to_show`: Number of tokens to display in the table (default: 30)
+  - `cache_size`: Maximum number of cached token sequences (default: 100)
+
+Layer probability and correlation calculations are controlled exclusively by the `--layer_prob` command-line flag.
