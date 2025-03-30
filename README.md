@@ -134,6 +134,25 @@ In this view:
 
 This visualization helps you understand which parts of the prompt are most important for the model's next token prediction. For example, you might see that the model pays more attention to recent tokens or to specific keywords in the prompt.
 
+Pressing `e` again will cycle to the local token bias view.
+
+### Local Token Bias
+
+The local token bias view shows the cosine similarity between each token's hidden state and the hidden state of the last token (which is used for next-token prediction). This reveals how semantically similar each token is to the current prediction context.
+
+How it works:
+1. Extracts the hidden state representation of each token from the last layer
+2. Computes the cosine similarity between each token's hidden state and the last token's hidden state
+3. Normalizes these similarity scores to create a heatmap
+
+In this view:
+- Each token is colored based on its similarity to the final token's representation
+- Orange indicates low similarity (less relevant to current prediction)
+- Blue indicates high similarity (more relevant to current prediction)
+- The legend shows the similarity scale from 0.0 to 1.0
+
+This visualization provides a different perspective than attention influence, focusing on semantic similarity rather than attention flow. It can reveal which tokens share semantic properties with the current prediction context, even if they don't receive direct attention.
+
 Pressing `e` again will return you back to the default view.
 
 ### Layer Analysis

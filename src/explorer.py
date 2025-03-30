@@ -207,6 +207,47 @@ class Explorer:
             normalized_entropies.append(normalized_entropy)
         
         return normalized_entropies
+        
+    def get_local_token_bias(self):
+        """
+        Computes cosine similarities between each token's hidden state and the hidden state
+        of the last token (the next-token predictor).
+        
+        Returns:
+            List of cosine similarities for each token in the prompt.
+        """
+        if not self.prompt_tokens:
+            return []
+            
+        # Convert token IDs to tensor and create input
+        input_ids = torch.tensor([self.prompt_tokens]).to(self.device)
+        
+        # Get model output with hidden states
+        with torch.no_grad():
+            outputs = self.model(input_ids, output_hidden_states=True)
+            
+        # Get the last layer's hidden states. Shape: (seq_len, hidden_dim)
+        hidden_states = outputs.hidden_states[-1][0]
+        
+        # Get the hidden state of the last token (used for next-token prediction)
+        final_state = hidden_states[-1]
+        
+        # Compute cosine similarity for each token with the final token
+        cosine_similarities = []
+        for token_state in hidden_states:
+            # Calculate cosine similarity
+            dot_product = torch.sum(token_state * final_state)
+            norm_token = torch.norm(token_state)
+            norm_final = torch.norm(final_state)
+            
+            # Avoid division by zero
+            if norm_token > 0 and norm_final > 0:
+                similarity = dot_product / (norm_token * norm_final)
+                cosine_similarities.append(similarity.item())
+            else:
+                cosine_similarities.append(0.0)
+        
+        return cosine_similarities
 
     def get_prompt(self):
         """

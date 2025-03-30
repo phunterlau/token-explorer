@@ -34,7 +34,7 @@ MAX_PROMPTS = config["prompt"]["max_prompts"]
 class TokenExplorer(App):
     """Main application class."""
 
-    display_modes = cycle(["prompt", "prob", "entropy", "influence"])
+    display_modes = cycle(["prompt", "prob", "entropy", "influence", "local_bias"])
     display_mode = reactive(next(display_modes))
     layer_display_mode = cycle(["none", "prob", "corr"])  # None, probabilities, correlations
     current_layer_mode = reactive(next(layer_display_mode))
@@ -146,6 +146,12 @@ class TokenExplorer(App):
         """Convert influence score to a color (green to purple)"""
         # Green (low) to purple (high)
         return f"#{0:02x}{int(255 * (1 - influence)):02x}{int(255 * influence):02x}"
+        
+    def _bias_to_color(self, bias):
+        """Convert local token bias score to a color (orange to blue)"""
+        # Orange (low) to blue (high)
+        scaled_bias = min(max(bias, 0.0), 1.0)  # Ensure bias is in [0,1]
+        return f"#{int(255 * (1 - scaled_bias)):02x}{int(128 * (1 - scaled_bias)):02x}{int(255 * scaled_bias):02x}"
     
     def _render_prompt(self):
         if self.display_mode == "entropy":
@@ -187,6 +193,32 @@ class TokenExplorer(App):
             else:
                 prompt_text = self.explorer.get_prompt()
                 prompt_legend = "[bold]No tokens to analyze influence[/bold]"
+        elif self.display_mode == "local_bias":
+            # Get local token bias scores
+            bias_scores = self.explorer.get_local_token_bias()
+            token_strings = self.explorer.get_prompt_tokens_strings()
+            
+            if bias_scores:
+                # Normalize bias scores to [0,1] range for visualization
+                max_bias = max(bias_scores)
+                if max_bias > 0:
+                    normalized_bias = [b/max_bias for b in bias_scores]
+                else:
+                    normalized_bias = bias_scores
+                
+                # Create bias legend
+                bias_legend = "".join([
+                    f"[on {self._bias_to_color(i/10)}] {i/10:.2f} [/on]"
+                    for i in range(11)
+                    ])
+                prompt_legend = f"[bold]Local token bias:[/bold]{bias_legend}"
+                
+                # Create bias heatmap
+                prompt_text = "".join(f"[on {self._bias_to_color(bias)}]{token}[/on]" 
+                                     for token, bias in zip(token_strings, normalized_bias))
+            else:
+                prompt_text = self.explorer.get_prompt()
+                prompt_legend = "[bold]No tokens to analyze local bias[/bold]"
         else:
             prompt_text = self.explorer.get_prompt()
             prompt_legend = ""
