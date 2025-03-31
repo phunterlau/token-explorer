@@ -153,6 +153,33 @@ In this view:
 
 This visualization provides a different perspective than attention influence, focusing on semantic similarity rather than attention flow. It can reveal which tokens share semantic properties with the current prediction context, even if they don't receive direct attention.
 
+Pressing `e` again will cycle to the token energy view.
+
+### Token Energy (Out-of-Distribution Detection)
+
+The token energy view displays the Helmholtz free energy for each token, which represents how likely the token is to be out-of-distribution (OOD). This is a powerful tool for identifying tokens that the model finds unusual or unexpected given their context.
+
+How it works:
+1. For each token position, the model computes the energy of the distribution over the next token
+2. Energy is calculated as `-T * logsumexp(logits / T)`, where T is a temperature parameter
+3. Higher energy values indicate tokens that are more likely to be out-of-distribution
+
+In this view:
+- Each token is colored based on its energy value
+- Green indicates low energy (in-distribution, expected tokens)
+- Red indicates high energy (out-of-distribution, unexpected tokens)
+- The legend shows the normalized energy scale from 0.0 to 1.0
+
+This visualization is particularly useful for:
+- Identifying tokens that don't fit well with the surrounding context
+- Detecting potential errors or inconsistencies in the model's understanding
+- Finding points where the model might be uncertain or confused
+
+The implementation is optimized for performance:
+- Uses a single forward pass through the model for all tokens (instead of one per token)
+- Implements caching to avoid recomputation when toggling between visualization modes
+- Normalizes energy values for intuitive visualization
+
 Pressing `e` again will return you back to the default view.
 
 ### Layer Analysis

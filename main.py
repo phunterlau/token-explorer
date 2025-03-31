@@ -34,7 +34,7 @@ MAX_PROMPTS = config["prompt"]["max_prompts"]
 class TokenExplorer(App):
     """Main application class."""
 
-    display_modes = cycle(["prompt", "prob", "entropy", "influence", "local_bias"])
+    display_modes = cycle(["prompt", "prob", "entropy", "influence", "local_bias", "energy"])
     display_mode = reactive(next(display_modes))
     layer_display_mode = cycle(["none", "prob", "corr"])  # None, probabilities, correlations
     current_layer_mode = reactive(next(layer_display_mode))
@@ -152,6 +152,21 @@ class TokenExplorer(App):
         # Orange (low) to blue (high)
         scaled_bias = min(max(bias, 0.0), 1.0)  # Ensure bias is in [0,1]
         return f"#{int(255 * (1 - scaled_bias)):02x}{int(128 * (1 - scaled_bias)):02x}{int(255 * scaled_bias):02x}"
+        
+    def _energy_to_color(self, energy, min_energy, max_energy):
+        """Convert energy score to a color (green to red)
+        
+        Lower energy (green) = in-distribution
+        Higher energy (red) = out-of-distribution
+        """
+        # Normalize energy to [0,1] range
+        if max_energy == min_energy:
+            normalized = 0.5
+        else:
+            normalized = (energy - min_energy) / (max_energy - min_energy)
+            
+        # Green (low energy, in-distribution) to red (high energy, out-of-distribution)
+        return f"#{int(255 * normalized):02x}{int(255 * (1 - normalized)):02x}00"
     
     def _render_prompt(self):
         if self.display_mode == "entropy":
@@ -219,6 +234,31 @@ class TokenExplorer(App):
             else:
                 prompt_text = self.explorer.get_prompt()
                 prompt_legend = "[bold]No tokens to analyze local bias[/bold]"
+        elif self.display_mode == "energy":
+            # Get token energies (Helmholtz free energy)
+            energy_scores = self.explorer.get_token_energies()
+            token_strings = self.explorer.get_prompt_tokens_strings()
+            
+            if energy_scores:
+                # Get min and max energy for normalization
+                min_energy = min(energy_scores)
+                max_energy = max(energy_scores)
+                
+                # Create energy legend
+                # Lower energy (green) = in-distribution
+                # Higher energy (red) = out-of-distribution
+                energy_legend = "".join([
+                    f"[on {self._energy_to_color(min_energy + i*(max_energy-min_energy)/10, min_energy, max_energy)}] {i/10:.1f} [/on]"
+                    for i in range(11)
+                    ])
+                prompt_legend = f"[bold]Token energy (OOD score):[/bold]{energy_legend}\n[bold]Green = in-distribution, Red = out-of-distribution[/bold]"
+                
+                # Create energy heatmap
+                prompt_text = "".join(f"[on {self._energy_to_color(energy, min_energy, max_energy)}]{token}[/on]" 
+                                     for token, energy in zip(token_strings, energy_scores))
+            else:
+                prompt_text = self.explorer.get_prompt()
+                prompt_legend = "[bold]No tokens to analyze energy[/bold]"
         else:
             prompt_text = self.explorer.get_prompt()
             prompt_legend = ""

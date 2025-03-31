@@ -248,6 +248,67 @@ class Explorer:
                 cosine_similarities.append(0.0)
         
         return cosine_similarities
+        
+    def get_token_energies(self, T=1.0):
+        """
+        Computes Helmholtz free energy for each token in the prompt.
+        Higher energy values typically indicate out-of-distribution tokens.
+        
+        This implementation is optimized to:
+        1. Use a single forward pass for all tokens
+        2. Cache results for better performance when toggling visualization modes
+        
+        Args:
+            T: Temperature parameter (default: 1.0)
+            
+        Returns:
+            List of energy values for each token in the prompt.
+        """
+        if not self.prompt_tokens:
+            return []
+        
+        # Check if we have a cached result
+        cache_key = tuple(self.prompt_tokens)
+        cache_attr = f"_energy_cache_{T}"
+        
+        # Check if we have this specific energy calculation cached
+        if hasattr(self, cache_attr) and cache_key in getattr(self, cache_attr):
+            return getattr(self, cache_attr)[cache_key]
+        
+        # Initialize cache if it doesn't exist
+        if not hasattr(self, cache_attr):
+            setattr(self, cache_attr, {})
+            
+        # Convert token IDs to tensor and create input
+        input_ids = torch.tensor([self.prompt_tokens]).to(self.device)
+        
+        # Get the model's output in a single forward pass
+        with torch.no_grad():
+            outputs = self.model(input_ids)
+            logits = outputs.logits[0]  # Shape: [sequence_length, vocab_size]
+        
+        # Calculate energies for each position
+        energies = []
+        
+        # First token has no context, so we'll use a default value
+        energies.append(0.0)
+        
+        # For each position after the first
+        for pos in range(len(self.prompt_tokens) - 1):
+            # The logits at position 'pos' predict the token at position 'pos+1'
+            position_logits = logits[pos]
+            
+            # Calculate energy: -T * logsumexp(logits / T)
+            energy = -T * torch.logsumexp(position_logits / T, dim=-1)
+            
+            # Get the energy value
+            token_energy = energy.item()
+            energies.append(token_energy)
+        
+        # Cache the result
+        getattr(self, cache_attr)[cache_key] = energies
+        
+        return energies
 
     def get_prompt(self):
         """
