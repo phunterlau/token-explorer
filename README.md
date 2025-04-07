@@ -43,6 +43,7 @@ The application supports several command-line parameters:
 - **`--input <path_to_file>`, `-i <path_to_file>`**: Specify a text file to use as the initial prompt
 - **`--bf16`**: Load the model in bfloat16 precision to reduce memory usage
 - **`--layer_prob`**: Enable layer probability and correlation calculations
+- **`--seed <integer>`**: Set the random seed for generation. If not provided, a random seed based on the current time will be used.
 
 Layer probability and correlation calculations are **disabled by default** as they can be computationally expensive. These calculations analyze how token predictions evolve through each layer of the model, providing valuable insights for ML researchers but requiring significant additional computation.
 

@@ -12,7 +12,7 @@ from collections import OrderedDict
 from functools import lru_cache
 
 class Explorer:
-    def __init__(self, model_name="Qwen/Qwen2.5-0.5B", use_bf16=False, enable_layer_prob=False):
+    def __init__(self, model_name="Qwen/Qwen2.5-0.5B", use_bf16=False, enable_layer_prob=False, seed=None):
         """
         Initialize the Explorer with a model name.
         
@@ -20,9 +20,29 @@ class Explorer:
             model_name: Name of the model to load (default "Qwen/Qwen2.5-0.5B")
             use_bf16: Whether to load model in bf16 precision (default False)
             enable_layer_prob: Whether to enable layer probability and correlation calculations (default False)
+            seed: Random seed for generation (default None)
         """
         self.model_name = model_name
+        self.seed = seed
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        
+        # Auto select device (CUDA > MPS > CPU)
+        if torch.cuda.is_available():
+            self.device = torch.device("cuda")
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+        else:
+            self.device = torch.device("cpu")
+            
+        # Create a PyTorch generator with the provided seed for deterministic generation
+        if self.seed is not None:
+            # MPS doesn't support custom generators, so use CPU for MPS
+            generator_device = 'cpu' if self.device.type == 'mps' else self.device
+            self.generator = torch.Generator(device=generator_device)
+            self.generator.manual_seed(self.seed)
+        else:
+            self.generator = None
+            
         # Load model with bf16 if specified and force eager attention implementation
         if use_bf16:
             self.model = AutoModelForCausalLM.from_pretrained(
@@ -35,14 +55,6 @@ class Explorer:
                 model_name,
                 attn_implementation="eager"  # Force attention weights
             )
-        
-        # Auto select device (CUDA > MPS > CPU)
-        if torch.cuda.is_available():
-            self.device = torch.device("cuda")
-        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            self.device = torch.device("mps")
-        else:
-            self.device = torch.device("cpu")
         self.model = self.model.to(self.device)
         
         # Initialize with empty prompt
@@ -144,9 +156,12 @@ class Explorer:
         # Convert token IDs to tensor and create input
         input_ids = torch.tensor([self.prompt_tokens]).to(self.device)
         
-        # Get the model's output in a single forward pass
+        # Get the model's output in a single forward pass, using the generator if available
         with torch.no_grad():
-            outputs = self.model(input_ids)
+            if self.generator is not None:
+                outputs = self.model(input_ids, generation_config={"generator": self.generator})
+            else:
+                outputs = self.model(input_ids)
             logits = outputs.logits[0]  # Shape: [sequence_length, vocab_size]
         
         # Calculate probabilities for each position
@@ -175,9 +190,12 @@ class Explorer:
         # Convert token IDs to tensor and create input
         input_ids = torch.tensor([self.prompt_tokens]).to(self.device)
         
-        # Get the model's output in a single forward pass
+        # Get the model's output in a single forward pass, using the generator if available
         with torch.no_grad():
-            outputs = self.model(input_ids)
+            if self.generator is not None:
+                outputs = self.model(input_ids, generation_config={"generator": self.generator})
+            else:
+                outputs = self.model(input_ids)
             logits = outputs.logits[0]  # Shape: [sequence_length, vocab_size]
         
         # Calculate normalized entropy for each position
@@ -222,9 +240,12 @@ class Explorer:
         # Convert token IDs to tensor and create input
         input_ids = torch.tensor([self.prompt_tokens]).to(self.device)
         
-        # Get model output with hidden states
+        # Get model output with hidden states, using the generator if available
         with torch.no_grad():
-            outputs = self.model(input_ids, output_hidden_states=True)
+            if self.generator is not None:
+                outputs = self.model(input_ids, output_hidden_states=True, generation_config={"generator": self.generator})
+            else:
+                outputs = self.model(input_ids, output_hidden_states=True)
             
         # Get the last layer's hidden states. Shape: (seq_len, hidden_dim)
         hidden_states = outputs.hidden_states[-1][0]
@@ -282,9 +303,12 @@ class Explorer:
         # Convert token IDs to tensor and create input
         input_ids = torch.tensor([self.prompt_tokens]).to(self.device)
         
-        # Get the model's output in a single forward pass
+        # Get the model's output in a single forward pass, using the generator if available
         with torch.no_grad():
-            outputs = self.model(input_ids)
+            if self.generator is not None:
+                outputs = self.model(input_ids, generation_config={"generator": self.generator})
+            else:
+                outputs = self.model(input_ids)
             logits = outputs.logits[0]  # Shape: [sequence_length, vocab_size]
         
         # Calculate energies for each position
@@ -417,9 +441,12 @@ class Explorer:
         # Convert token IDs to tensor and create input
         input_ids = torch.tensor([self.prompt_tokens]).to(self.device)
         
-        # Get model output with attention
+        # Get model output with attention, using the generator if available
         with torch.no_grad():
-            outputs = self.model(input_ids, output_attentions=True)
+            if self.generator is not None:
+                outputs = self.model(input_ids, output_attentions=True, generation_config={"generator": self.generator})
+            else:
+                outputs = self.model(input_ids, output_attentions=True)
             
         # Stack attention from all layers [num_layers, batch, heads, seq, seq]
         attentions = torch.stack(outputs.attentions)
@@ -501,13 +528,19 @@ class Explorer:
             # Determine if we need hidden states based on layer_prob setting
             output_hidden_states = self.enable_layer_prob
             
-            # Get model output
+            # Get model output, using the generator if available for deterministic generation
             with torch.no_grad():
                 if output_hidden_states:
-                    outputs = self.model(input_ids, output_hidden_states=True)
+                    if self.generator is not None:
+                        outputs = self.model(input_ids, output_hidden_states=True, generation_config={"generator": self.generator})
+                    else:
+                        outputs = self.model(input_ids, output_hidden_states=True)
                     hidden_states = outputs.hidden_states
                 else:
-                    outputs = self.model(input_ids)
+                    if self.generator is not None:
+                        outputs = self.model(input_ids, generation_config={"generator": self.generator})
+                    else:
+                        outputs = self.model(input_ids)
                 
             # Get logits for next token prediction
             next_token_logits = outputs.logits[0, -1, :]

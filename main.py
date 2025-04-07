@@ -8,8 +8,12 @@ from textual.widgets import Footer, Header, Static, DataTable
 from textwrap import dedent
 import sys
 import argparse
-import tomli 
+import tomli
 from datetime import datetime
+import random
+import time
+import torch
+import numpy as np
 
 # Replace the constants with config
 def load_config():
@@ -54,9 +58,10 @@ class TokenExplorer(App):
     
     # No custom commands class needed
     
-    def __init__(self, prompt=EXAMPLE_PROMPT, use_bf16=False, enable_layer_prob=False):
+    def __init__(self, prompt=EXAMPLE_PROMPT, use_bf16=False, enable_layer_prob=False, seed=None):
         super().__init__()
-        self.title = f"TokenExplorer - {MODEL_NAME}"
+        self.seed = seed
+        self.title = f"TokenExplorer - {MODEL_NAME} - Seed: {self.seed}"
         # Add support for multiple prompts.
         self.prompts = [prompt]
         self.original_prompt = prompt  # Store original prompt for reset
@@ -397,7 +402,20 @@ if __name__ == "__main__":
     parser.add_argument('--input', '-i', type=str, help='Path to input text file')
     parser.add_argument('--bf16', action='store_true', help='Load model in bf16 precision')
     parser.add_argument('--layer_prob', action='store_true', help='Enable layer probability and correlation calculations (may be computationally expensive)')
+    parser.add_argument('--seed', type=int, default=None, help='Random seed for generation')
     args = parser.parse_args()
+
+    # Determine and set the random seed
+    if args.seed is None:
+        seed = int(time.time()) # Use current time as a random seed if none provided
+    else:
+        seed = args.seed
+        
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
     prompt = EXAMPLE_PROMPT
     if args.input:
@@ -411,5 +429,5 @@ if __name__ == "__main__":
             print(f"Error reading file: {e}")
             sys.exit(1)
         
-    app = TokenExplorer(prompt=prompt, use_bf16=args.bf16, enable_layer_prob=args.layer_prob)
+    app = TokenExplorer(prompt=prompt, use_bf16=args.bf16, enable_layer_prob=args.layer_prob, seed=seed)
     app.run()
