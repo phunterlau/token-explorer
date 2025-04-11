@@ -16,19 +16,26 @@ import torch
 import numpy as np
 
 # Replace the constants with config
-def load_config():
+def load_config(config_file="config.toml"):
     try:
-        with open("config.toml", "rb") as f:
+        with open(config_file, "rb") as f:
             return tomli.load(f)
     except FileNotFoundError:
-        print("Config file not found, using default values")
+        print(f"Config file '{config_file}' not found, using default values")
         return {
-            "model": "Qwen/Qwen2.5-0.5B",
-            "example_prompt": "Once upon a time, there was a",
-            "tokens_to_show": 30,
-            "max_prompts": 9
+            "model": {
+                "name": "Qwen/Qwen2.5-0.5B"
+            },
+            "prompt": {
+                "example_prompt": "Once upon a time, there was a",
+                "max_prompts": 9
+            },
+            "display": {
+                "tokens_to_show": 30
+            }
         }
 
+# Initialize with default values that will be overridden in __main__
 config = load_config()
 MODEL_NAME = config["model"]["name"]
 EXAMPLE_PROMPT = config["prompt"]["example_prompt"]
@@ -400,10 +407,19 @@ class TokenExplorer(App):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Token Explorer Application')
     parser.add_argument('--input', '-i', type=str, help='Path to input text file')
+    parser.add_argument('--config', type=str, default='config.toml', help='Path to configuration file (default: config.toml)')
     parser.add_argument('--bf16', action='store_true', help='Load model in bf16 precision')
     parser.add_argument('--layer_prob', action='store_true', help='Enable layer probability and correlation calculations (may be computationally expensive)')
     parser.add_argument('--seed', type=int, default=None, help='Random seed for generation')
     args = parser.parse_args()
+    
+    # Load configuration from the specified file and override global constants
+    config = load_config(args.config)
+    # Update the global variables with values from the config file
+    MODEL_NAME = config["model"]["name"]
+    EXAMPLE_PROMPT = config["prompt"]["example_prompt"]
+    TOKENS_TO_SHOW = config["display"]["tokens_to_show"]
+    MAX_PROMPTS = config["prompt"]["max_prompts"]
 
     # Determine and set the random seed
     if args.seed is None:

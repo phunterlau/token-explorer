@@ -3,13 +3,20 @@ This code is used to process an LLM one token at at time.
 
 The Explorer class manages the prompt internally and handles all interactions with the LLM.
 """
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 import torch
 import numpy as np
 import tomli
 from typing import Dict, List, Tuple, Optional
 from collections import OrderedDict
 from functools import lru_cache
+
+# Import Gemma3 specific classes
+try:
+    from transformers import Gemma3ForCausalLM
+    GEMMA3_AVAILABLE = True
+except ImportError:
+    GEMMA3_AVAILABLE = False
 
 class Explorer:
     def __init__(self, model_name="Qwen/Qwen2.5-0.5B", use_bf16=False, enable_layer_prob=False, seed=None):
