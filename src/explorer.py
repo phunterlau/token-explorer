@@ -502,6 +502,25 @@ class Explorer:
         
         return result
     
+    def calculate_z_scores(self, next_token_logits):
+        """
+        Calculate z-scores for all tokens based on the provided logits.
+        
+        Args:
+            next_token_logits: Logits tensor for next token prediction
+            
+        Returns:
+            Tensor of z-scores for all tokens
+        """
+        # Compute mean and std over entire vocabulary
+        mean = next_token_logits.mean().item()
+        std = next_token_logits.std().item()
+        
+        # Calculate z-score for each token
+        z_scores = (next_token_logits - mean) / (std + 1e-12)
+        
+        return z_scores
+    
     def get_top_n_tokens(self, n=5, search=""):
         """
         Get the top n most likely next tokens given the current prompt.
@@ -551,6 +570,9 @@ class Explorer:
                 
             # Get logits for next token prediction
             next_token_logits = outputs.logits[0, -1, :]
+            
+            # Calculate z-scores
+            z_scores = self.calculate_z_scores(next_token_logits)
             
             # Get probabilities for final layer using softmax
             next_token_probs = torch.nn.functional.softmax(next_token_logits, dim=0).to(torch.float32)
@@ -606,6 +628,7 @@ class Explorer:
                         "token_id": idx,
                         "token": token,
                         "probability": prob.item(),
+                        "z_score": z_scores[idx].item(),
                         "token_influence": influence
                     }
                     
@@ -652,6 +675,7 @@ class Explorer:
                     "token": token,
                     "token_id": idx.item(),
                     "probability": prob.item(),
+                    "z_score": z_scores[idx].item(),
                     "token_influence": influence
                 }
                 

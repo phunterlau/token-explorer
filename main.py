@@ -49,6 +49,7 @@ class TokenExplorer(App):
     display_mode = reactive(next(display_modes))
     layer_display_mode = cycle(["none", "prob", "corr"])  # None, probabilities, correlations
     current_layer_mode = reactive(next(layer_display_mode))
+    show_z_scores = reactive(False)  # Toggle for z-score display
 
     BINDINGS = [("e", "change_display_mode", "Mode"),
                 ("left,h", "pop_token", "Back"),
@@ -61,6 +62,7 @@ class TokenExplorer(App):
                 ("j", "select_next", "Down"),
                 ("k", "select_prev", "Up"),
                 ("p", "toggle_layer_display", "Layer"),
+                ("z", "toggle_z_scores", "Z-Score"),
                 ("ctrl+r", "reset_prompt", "Reset")]
     
     # No custom commands class needed
@@ -115,6 +117,8 @@ class TokenExplorer(App):
         max_val = self._get_max_layer_value(tokens)
         # Include layers column only if layer display is enabled
         headers = ["token_id", "token", "prob"]
+        if self.show_z_scores:
+            headers.append("z-score")
         if self.current_layer_mode != "none":
             headers.append("layers")
         
@@ -125,6 +129,8 @@ class TokenExplorer(App):
                 token["token"],
                 f"{token['probability']:.4f}"
             ]
+            if self.show_z_scores:
+                row.append(f"{token['z_score']:.4f}")
             if self.current_layer_mode != "none":
                 row.append(self._layer_values_to_heatmap(token, max_val))
             rows.append(tuple(row))
@@ -362,6 +368,11 @@ class TokenExplorer(App):
             
         # If enabled, toggle as normal
         self.current_layer_mode = next(self.layer_display_mode)
+        self._refresh_table()
+        
+    def action_toggle_z_scores(self):
+        """Toggle display of z-scores for tokens"""
+        self.show_z_scores = not self.show_z_scores
         self._refresh_table()
 
     def action_pop_token(self):
