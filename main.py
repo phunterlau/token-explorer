@@ -1,5 +1,6 @@
 from itertools import cycle
 from src.explorer import Explorer
+from src.ui_adapter import UIDataAdapter
 from src.utils import entropy_to_color, probability_to_color
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
@@ -77,65 +78,16 @@ class TokenExplorer(App):
         self.prompt_index = 0
         self.explorer = Explorer(MODEL_NAME, use_bf16=use_bf16, enable_layer_prob=enable_layer_prob)
         self.explorer.set_prompt(prompt)
-        self.rows = self._top_tokens_to_rows(
-            self.explorer.get_top_n_tokens(n=TOKENS_TO_SHOW)
+        self.ui_adapter = UIDataAdapter(self.explorer)  # Add UI adapter
+        self.rows = self.ui_adapter.get_table_rows(
+            self.explorer.get_top_n_tokens(n=TOKENS_TO_SHOW),
+            show_z_scores=False,
+            layer_mode="none"
             )
         self.selected_row = 0  # Track currently selected token row
         # Store layer probability enabled state for UI
         self.layer_prob_enabled = enable_layer_prob
     
-    def _prob_to_color(self, prob, max_prob):
-        """Convert probability to a color (red to blue)"""
-        # Scale probability by max value (no extra scaling factor)
-        scaled_prob = min(prob / max_prob, 1.0)
-        # Red (low) to blue (high)
-        return f"#{int(255 * (1 - scaled_prob)):02x}00{int(255 * scaled_prob):02x}"
-
-    def _get_max_layer_value(self, tokens):
-        """Get maximum layer value across all tokens"""
-        if self.current_layer_mode == "corr":
-            return max(max(token["layer_correlations"]) for token in tokens)
-        elif self.current_layer_mode == "prob":
-            return max(max(token["layer_probs"]) for token in tokens)
-        return 0
-
-    def _layer_values_to_heatmap(self, token, max_val):
-        """Convert layer values to a heatmap string"""
-        if self.current_layer_mode == "none":
-            return ""
-            
-        blocks = []
-        values = token["layer_correlations"] if self.current_layer_mode == "corr" else token["layer_probs"]
-        for val in values:
-            color = self._prob_to_color(val, max_val)
-            blocks.append(f"[on {color}] ")
-        # Combine all blocks into a single string
-        return "".join(blocks)
-
-    def _top_tokens_to_rows(self, tokens):
-        # Get global max value for consistent scaling
-        max_val = self._get_max_layer_value(tokens)
-        # Include layers column only if layer display is enabled
-        headers = ["token_id", "token", "prob"]
-        if self.show_z_scores:
-            headers.append("z-score")
-        if self.current_layer_mode != "none":
-            headers.append("layers")
-        
-        rows = []
-        for token in tokens:
-            row = [
-                token["token_id"],
-                token["token"],
-                f"{token['probability']:.4f}"
-            ]
-            if self.show_z_scores:
-                row.append(f"{token['z_score']:.4f}")
-            if self.current_layer_mode != "none":
-                row.append(self._layer_values_to_heatmap(token, max_val))
-            rows.append(tuple(row))
-        
-        return [tuple(headers)] + rows
         
     def compose(self) -> ComposeResult:
         yield Header()
@@ -146,8 +98,10 @@ class TokenExplorer(App):
 
     def _refresh_table(self):
         table = self.query_one(DataTable)
-        self.rows = self._top_tokens_to_rows(
-            self.explorer.get_top_n_tokens(n=TOKENS_TO_SHOW)
+        self.rows = self.ui_adapter.get_table_rows(
+            self.explorer.get_top_n_tokens(n=TOKENS_TO_SHOW),
+            show_z_scores=self.show_z_scores,
+            layer_mode=self.current_layer_mode
             )
         # Clear both columns and rows
         table.clear()
@@ -160,145 +114,25 @@ class TokenExplorer(App):
         table.move_cursor(row=self.selected_row)
         self.query_one("#results", Static).update(self._render_prompt())
             
-    def _influence_to_color(self, influence):
-        """Convert influence score to a color (green to purple)"""
-        # Green (low) to purple (high)
-        return f"#{0:02x}{int(255 * (1 - influence)):02x}{int(255 * influence):02x}"
-        
-    def _bias_to_color(self, bias):
-        """Convert local token bias score to a color (orange to blue)"""
-        # Orange (low) to blue (high)
-        scaled_bias = min(max(bias, 0.0), 1.0)  # Ensure bias is in [0,1]
-        return f"#{int(255 * (1 - scaled_bias)):02x}{int(128 * (1 - scaled_bias)):02x}{int(255 * scaled_bias):02x}"
-        
-    def _energy_to_color(self, energy, min_energy, max_energy):
-        """Convert energy score to a color (green to red)
-        
-        Lower energy (green) = in-distribution
-        Higher energy (red) = out-of-distribution
-        """
-        # Normalize energy to [0,1] range
-        if max_energy == min_energy:
-            normalized = 0.5
-        else:
-            normalized = (energy - min_energy) / (max_energy - min_energy)
-            
-        # Green (low energy, in-distribution) to red (high energy, out-of-distribution)
-        return f"#{int(255 * normalized):02x}{int(255 * (1 - normalized)):02x}00"
     
     def _render_prompt(self):
+        # Use UIDataAdapter to render different display modes
         if self.display_mode == "entropy":
-            entropy_legend = "".join([
-                f"[on {entropy_to_color(i/10)}] {i/10:.2f} [/on]"
-                for i in range(11)
-                ])
-            prompt_legend = f"[bold]Token entropy:[/bold]{entropy_legend}"
-            token_entropies = self.explorer.get_prompt_token_normalized_entropies()
-            token_strings = self.explorer.get_prompt_tokens_strings()
-            prompt_text = "".join(f"[on {entropy_to_color(entropy)}]{token}[/on]" for token, entropy in zip(token_strings, token_entropies))
+            prompt_text, prompt_legend = self.ui_adapter.render_entropy_display()
         elif self.display_mode == "prob":
-            prob_legend = "".join([
-                f"[on {probability_to_color(i/10)}] {i/10:.2f} [/on]"
-                for i in range(11)
-                ])
-            prompt_legend = f"[bold]Token prob:[/bold]{prob_legend}"
-            token_probs = self.explorer.get_prompt_token_probabilities()
-            token_strings = self.explorer.get_prompt_tokens_strings()
-            prompt_text = "".join(f"[on {probability_to_color(prob)}]{token}[/on]" for token, prob in zip(token_strings, token_probs))
+            prompt_text, prompt_legend = self.ui_adapter.render_probability_display()
         elif self.display_mode == "influence":
-            # Get the top token to analyze influence
-            top_tokens = self.explorer.get_top_n_tokens(n=1)
-            if top_tokens:
-                top_token = top_tokens[0]
-                influence_scores = top_token["token_influence"]
-                
-                # Create influence legend
-                influence_legend = "".join([
-                    f"[on {self._influence_to_color(i/10)}] {i/10:.2f} [/on]"
-                    for i in range(11)
-                    ])
-                prompt_legend = f"[bold]Token attention influence:[/bold]{influence_legend}"
-                
-                # Create influence heatmap
-                token_strings = self.explorer.get_prompt_tokens_strings()
-                prompt_text = "".join(f"[on {self._influence_to_color(score)}]{token}[/on]" 
-                                     for token, score in zip(token_strings, influence_scores))
-            else:
-                prompt_text = self.explorer.get_prompt()
-                prompt_legend = "[bold]No tokens to analyze influence[/bold]"
+            prompt_text, prompt_legend = self.ui_adapter.render_influence_display()
         elif self.display_mode == "local_bias":
-            # Get local token bias scores
-            bias_scores = self.explorer.get_local_token_bias()
-            token_strings = self.explorer.get_prompt_tokens_strings()
-            
-            if bias_scores:
-                # Normalize bias scores to [0,1] range for visualization
-                max_bias = max(bias_scores)
-                if max_bias > 0:
-                    normalized_bias = [b/max_bias for b in bias_scores]
-                else:
-                    normalized_bias = bias_scores
-                
-                # Create bias legend
-                bias_legend = "".join([
-                    f"[on {self._bias_to_color(i/10)}] {i/10:.2f} [/on]"
-                    for i in range(11)
-                    ])
-                prompt_legend = f"[bold]Local token bias:[/bold]{bias_legend}"
-                
-                # Create bias heatmap
-                prompt_text = "".join(f"[on {self._bias_to_color(bias)}]{token}[/on]" 
-                                     for token, bias in zip(token_strings, normalized_bias))
-            else:
-                prompt_text = self.explorer.get_prompt()
-                prompt_legend = "[bold]No tokens to analyze local bias[/bold]"
+            prompt_text, prompt_legend = self.ui_adapter.render_local_bias_display()
         elif self.display_mode == "energy":
-            # Get token energies (Helmholtz free energy)
-            energy_scores = self.explorer.get_token_energies()
-            token_strings = self.explorer.get_prompt_tokens_strings()
-            
-            if energy_scores:
-                # Get min and max energy for normalization
-                min_energy = min(energy_scores)
-                max_energy = max(energy_scores)
-                
-                # Create energy legend
-                # Lower energy (green) = in-distribution
-                # Higher energy (red) = out-of-distribution
-                energy_legend = "".join([
-                    f"[on {self._energy_to_color(min_energy + i*(max_energy-min_energy)/10, min_energy, max_energy)}] {i/10:.1f} [/on]"
-                    for i in range(11)
-                    ])
-                prompt_legend = f"[bold]Token energy (OOD score):[/bold]{energy_legend}\n[bold]Green = in-distribution, Red = out-of-distribution[/bold]"
-                
-                # Create energy heatmap
-                prompt_text = "".join(f"[on {self._energy_to_color(energy, min_energy, max_energy)}]{token}[/on]" 
-                                     for token, energy in zip(token_strings, energy_scores))
-            else:
-                prompt_text = self.explorer.get_prompt()
-                prompt_legend = "[bold]No tokens to analyze energy[/bold]"
+            prompt_text, prompt_legend = self.ui_adapter.render_energy_display()
         else:
             prompt_text = self.explorer.get_prompt()
             prompt_legend = ""
+        
         # Add layer heatmap legend if enabled
-        layer_legend = ""
-        if self.current_layer_mode != "none" and len(self.rows) > 1:
-            num_layers = len(self.explorer.get_top_n_tokens(n=1)[0]["layer_probs"])
-            # Add layer numbers
-            layer_numbers = "".join([
-                f"[bold]{i+1}[/bold] " for i in range(num_layers)
-            ])
-            # Get max value across all tokens
-            tokens = self.explorer.get_top_n_tokens(n=TOKENS_TO_SHOW)
-            max_val = self._get_max_layer_value(tokens)
-            # Add scale legend with dynamic range (no extra scaling factor)
-            scale_points = [i * max_val / 10 for i in range(11)]
-            scale = "".join([
-                f"[on {self._prob_to_color(p, max_val)}] [/on]"
-                for p in scale_points
-            ])
-            value_type = "Layer correlation" if self.current_layer_mode == "corr" else "Layer prob"
-            layer_legend = f"[bold]Layers:[/bold] {layer_numbers}\n[bold]{value_type}:[/bold] {scale} (0.0 → {max_val:.3f})"
+        layer_legend = self.ui_adapter.render_layer_legend(self.current_layer_mode, TOKENS_TO_SHOW)
 
         return dedent(f"""
 {prompt_text}

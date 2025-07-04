@@ -363,8 +363,9 @@ class Explorer:
         """
         Get the current prompt tokens as a string.
         Returns a list of strings with special tokens (newline, tab, etc.) made visible.
+        Note: Special token formatting is now handled by UIDataAdapter for UI separation.
         """
-        return [self._format_special_token(self.tokenizer.decode(token)) for token in self.prompt_tokens]
+        return [self.tokenizer.decode(token) for token in self.prompt_tokens]
     
     def pop_token(self):
         """
@@ -396,27 +397,6 @@ class Explorer:
         self.prompt_text = self.tokenizer.decode(self.prompt_tokens)
         return self
     
-    def _format_special_token(self, token):
-        """
-        Format special/invisible tokens into readable strings.
-        
-        Args:
-            token: The token string to format
-        Returns:
-            Formatted string with special tokens made visible
-        """
-        # Common special tokens mapping
-        special_tokens = {
-            '\n': '\\n',  # newline
-            '\t': '\\t',  # tab
-            '\r': '\\r',  # carriage return
-            ' ': '\\s',   # space
-        }
-        
-        # If token is in special_tokens, return its visible representation
-        if token in special_tokens:
-            return special_tokens[token]
-        return token
 
     def get_token_influence(self, token_id: int) -> List[float]:
         """
@@ -605,7 +585,7 @@ class Explorer:
             # Filter tokens that contain the search string
             matching_tokens = []
             for idx, prob in enumerate(next_token_probs):
-                token = self._format_special_token(self.tokenizer.decode(idx))
+                token = self.tokenizer.decode(idx)
                 if search.lower() in token.lower():
                     # Only calculate correlations if layer_prob is enabled
                     if self.enable_layer_prob:
@@ -652,7 +632,7 @@ class Explorer:
             
             results = []
             for prob, idx in zip(top_probs, top_indices):
-                token = self._format_special_token(self.tokenizer.decode(idx))
+                token = self.tokenizer.decode(idx)
                 
                 # Only calculate correlations if layer_prob is enabled
                 if self.enable_layer_prob:
