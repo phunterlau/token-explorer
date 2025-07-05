@@ -185,17 +185,21 @@ class Explorer:
         Returns:
             List of correlation scores for each layer
         """
-        # Calculate correlation as probability of token at each layer
-        # This matches score_example.py's approach of summing probabilities
-        # for target tokens, but for a single token
-        correlations = []
-        for layer_prob in layer_probs:
-            # Get probability for this token at this layer
-            layer_token_prob = layer_prob[token_id].item()
-            correlations.append(layer_token_prob)
+        # Check if we have batched tensor format (from optimization)
+        if len(layer_probs) > 0 and hasattr(layer_probs[0], 'shape') and len(layer_probs[0].shape) > 1:
+            # If layer_probs[0] is a batched tensor [L, V], extract correlations efficiently
+            batched_probs = layer_probs[0]  # Shape: [L, V]
+            correlations = batched_probs[:, token_id].tolist()  # Single indexing operation
+        else:
+            # Original method for backward compatibility
+            correlations = []
+            for layer_prob in layer_probs:
+                # Get probability for this token at this layer
+                layer_token_prob = layer_prob[token_id].item()
+                correlations.append(layer_token_prob)
         
         # Normalize correlations to [0,1] range
-        max_corr = max(correlations)
+        max_corr = max(correlations) if correlations else 0
         if max_corr > 0:
             correlations = [c/max_corr for c in correlations]
             
@@ -576,6 +580,25 @@ class Explorer:
             layer_probs, token_correlations, token_influences = self._cache.pop(cache_key)
             self._cache[cache_key] = (layer_probs, token_correlations, token_influences)
             next_token_probs = layer_probs[-1] if layer_probs else None  # Final layer probabilities
+            
+            # We still need to calculate z_scores for cache hits, so get the logits
+            if next_token_probs is None:
+                # Need to run model to get logits for z_scores
+                input_ids = torch.tensor([self.prompt_tokens]).to(self.device)
+                with torch.no_grad():
+                    if self.generator is not None:
+                        outputs = self.model(input_ids, generation_config={"generator": self.generator})
+                    else:
+                        outputs = self.model(input_ids)
+                next_token_logits = outputs.logits[0, -1, :]
+                next_token_probs = torch.nn.functional.softmax(next_token_logits, dim=0).to(torch.float32)
+            else:
+                # Convert probabilities back to logits for z_score calculation
+                # Use log-probabilities as approximation to logits
+                next_token_logits = torch.log(next_token_probs + 1e-12)
+            
+            # Calculate z-scores for cache hit case
+            z_scores = self.calculate_z_scores(next_token_logits)
         
         # If not in cache or layer_probs is empty (when enable_layer_prob was previously False)
         if not cache_key in self._cache or not layer_probs:
@@ -610,15 +633,18 @@ class Explorer:
             
             # Calculate per-layer probabilities only if enabled
             if self.enable_layer_prob:
-                # Skip first element as it's the embeddings, not a layer output
-                layer_probs = []
-                for layer_output in hidden_states[1:]:
-                    # Get last token's hidden state
-                    last_hidden = layer_output[0, -1, :]
-                    # Project to vocab size using model's lm_head
-                    layer_logits = self.model.lm_head(last_hidden.unsqueeze(0)).squeeze(0)
-                    # Get probabilities
-                    layer_probs.append(torch.nn.functional.softmax(layer_logits, dim=0).to(torch.float32))
+                # BATCHED OPTIMIZATION: Process all layers in single operation
+                # Extract last token hidden states from all layers (skip embeddings)
+                all_layer_hiddens = torch.stack([layer_output[0, -1, :] for layer_output in hidden_states[1:]])  # Shape: [L, H]
+                
+                # Single batched matrix multiplication instead of L separate calls
+                all_layer_logits = self.model.lm_head(all_layer_hiddens)  # Shape: [L, V] - SINGLE CALL
+                
+                # Batched softmax
+                all_layer_probs = torch.nn.functional.softmax(all_layer_logits, dim=-1).to(torch.float32)  # Shape: [L, V]
+                
+                # Convert to list format for compatibility with existing code
+                layer_probs = [all_layer_probs[i] for i in range(all_layer_probs.shape[0])]
                 
                 # Cache miss - Store in cache
                 print(f"Cache miss for token sequence of length {len(cache_key)}")
