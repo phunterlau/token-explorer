@@ -85,8 +85,38 @@ Token Explorer uses a "video game" style interface. For the best experience, pla
 | p | | Toggle layer visualization (when enabled) |
 | z | | Toggle z-score display |
 | x | | Save current prompt to file |
+| c | | Toggle cursor visibility on/off |
 | Ctrl+r | | Reset prompt to original state |
 | Ctrl+q | | Quit application |
+
+#### Token Cursor Navigation
+
+Token Explorer includes a powerful cursor system for precise token-level navigation and analysis. The cursor allows you to focus on specific tokens within your prompt and see detailed information about them.
+
+**Cursor Features:**
+- **Visual Indicators**: Current token is highlighted with `[token]` brackets in all visualization modes
+- **Status Bar Info**: Shows current cursor position and selected token (e.g., "Cursor: 4/14 'time'")
+- **Toggle Visibility**: Press `c` to show/hide cursor indicators for clean viewing
+- **Multi-Mode Support**: Works across all visualization modes (entropy, probability, influence, etc.)
+
+**Cursor Navigation Keys:**
+| Key | Action |
+|-----|--------|
+| Ctrl+j | Move cursor to next token |
+| Ctrl+k | Move cursor to previous token |
+| Ctrl+w | Move cursor to next word boundary |
+| Ctrl+b | Move cursor to previous word boundary |
+| Ctrl+0 | Move cursor to start of prompt |
+| Ctrl+$ | Move cursor to end of prompt |
+
+**Usage Examples:**
+- **Analyze specific tokens**: Use cursor navigation to examine individual tokens in detail
+- **Compare token properties**: Move cursor between tokens to see how entropy, probability, or influence changes
+- **Precise exploration**: Navigate word-by-word or token-by-token through complex prompts
+- **Clean viewing**: Toggle cursor off (press `c`) for distraction-free analysis
+- **Status tracking**: Monitor current token and position in the status bar
+
+The cursor system is inspired by VIM-style navigation, making it familiar and efficient for users who prefer keyboard-driven interfaces.
 
 ### Basic Workflow
 
