@@ -124,8 +124,8 @@ class UIDataAdapter:
         # Green (low energy, in-distribution) to red (high energy, out-of-distribution)
         return f"#{int(255 * normalized):02x}{int(255 * (1 - normalized)):02x}00"
     
-    def render_entropy_display(self):
-        """Render entropy visualization"""
+    def render_entropy_display(self, cursor_position=None):
+        """Render entropy visualization with optional cursor"""
         entropy_legend = "".join([
             f"[on {entropy_to_color(i/10)}] {i/10:.2f} [/on]"
             for i in range(11)
@@ -134,13 +134,22 @@ class UIDataAdapter:
         
         token_entropies = self.explorer.get_prompt_token_normalized_entropies()
         token_strings = self.get_prompt_tokens_display()
-        prompt_text = "".join(f"[on {entropy_to_color(entropy)}]{token}[/on]" 
-                             for token, entropy in zip(token_strings, token_entropies))
+        
+        # Build prompt text with cursor indicator
+        prompt_parts = []
+        for i, (token, entropy) in enumerate(zip(token_strings, token_entropies)):
+            if cursor_position is not None and i == cursor_position:
+                # Add cursor brackets around current token - escape brackets to prevent markup conflicts
+                prompt_parts.append(f"[on {entropy_to_color(entropy)}]\\[{token}\\][/on]")
+            else:
+                prompt_parts.append(f"[on {entropy_to_color(entropy)}]{token}[/on]")
+        
+        prompt_text = "".join(prompt_parts)
         
         return prompt_text, prompt_legend
     
-    def render_probability_display(self):
-        """Render probability visualization"""
+    def render_probability_display(self, cursor_position=None):
+        """Render probability visualization with optional cursor"""
         prob_legend = "".join([
             f"[on {probability_to_color(i/10)}] {i/10:.2f} [/on]"
             for i in range(11)
@@ -149,13 +158,22 @@ class UIDataAdapter:
         
         token_probs = self.explorer.get_prompt_token_probabilities()
         token_strings = self.get_prompt_tokens_display()
-        prompt_text = "".join(f"[on {probability_to_color(prob)}]{token}[/on]" 
-                             for token, prob in zip(token_strings, token_probs))
+        
+        # Build prompt text with cursor indicator
+        prompt_parts = []
+        for i, (token, prob) in enumerate(zip(token_strings, token_probs)):
+            if cursor_position is not None and i == cursor_position:
+                # Add cursor brackets around current token - escape brackets to prevent markup conflicts
+                prompt_parts.append(f"[on {probability_to_color(prob)}]\\[{token}\\][/on]")
+            else:
+                prompt_parts.append(f"[on {probability_to_color(prob)}]{token}[/on]")
+        
+        prompt_text = "".join(prompt_parts)
         
         return prompt_text, prompt_legend
     
-    def render_influence_display(self):
-        """Render influence visualization"""
+    def render_influence_display(self, cursor_position=None):
+        """Render influence visualization with optional cursor"""
         # Get the top token to analyze influence
         top_tokens = self.explorer.get_top_n_tokens(n=1)
         if top_tokens:
@@ -169,18 +187,24 @@ class UIDataAdapter:
             ])
             prompt_legend = f"[bold]Token attention influence:[/bold]{influence_legend}"
             
-            # Create influence heatmap
+            # Create influence heatmap with cursor
             token_strings = self.get_prompt_tokens_display()
-            prompt_text = "".join(f"[on {self.influence_to_color(score)}]{token}[/on]" 
-                                 for token, score in zip(token_strings, influence_scores))
+            prompt_parts = []
+            for i, (token, score) in enumerate(zip(token_strings, influence_scores)):
+                if cursor_position is not None and i == cursor_position:
+                    prompt_parts.append(f"[on {self.influence_to_color(score)}]\\[{token}\\][/on]")
+                else:
+                    prompt_parts.append(f"[on {self.influence_to_color(score)}]{token}[/on]")
+            
+            prompt_text = "".join(prompt_parts)
         else:
             prompt_text = self.explorer.get_prompt()
             prompt_legend = "[bold]No tokens to analyze influence[/bold]"
         
         return prompt_text, prompt_legend
     
-    def render_local_bias_display(self):
-        """Render local bias visualization"""
+    def render_local_bias_display(self, cursor_position=None):
+        """Render local bias visualization with optional cursor"""
         # Get local token bias scores
         bias_scores = self.explorer.get_local_token_bias()
         token_strings = self.get_prompt_tokens_display()
@@ -200,17 +224,23 @@ class UIDataAdapter:
             ])
             prompt_legend = f"[bold]Local token bias:[/bold]{bias_legend}"
             
-            # Create bias heatmap
-            prompt_text = "".join(f"[on {self.bias_to_color(bias)}]{token}[/on]" 
-                                 for token, bias in zip(token_strings, normalized_bias))
+            # Create bias heatmap with cursor
+            prompt_parts = []
+            for i, (token, bias) in enumerate(zip(token_strings, normalized_bias)):
+                if cursor_position is not None and i == cursor_position:
+                    prompt_parts.append(f"[on {self.bias_to_color(bias)}]\\[{token}\\][/on]")
+                else:
+                    prompt_parts.append(f"[on {self.bias_to_color(bias)}]{token}[/on]")
+            
+            prompt_text = "".join(prompt_parts)
         else:
             prompt_text = self.explorer.get_prompt()
             prompt_legend = "[bold]No tokens to analyze local bias[/bold]"
         
         return prompt_text, prompt_legend
     
-    def render_energy_display(self):
-        """Render energy visualization"""
+    def render_energy_display(self, cursor_position=None):
+        """Render energy visualization with optional cursor"""
         # Get token energies (Helmholtz free energy)
         energy_scores = self.explorer.get_token_energies()
         token_strings = self.get_prompt_tokens_display()
@@ -229,9 +259,15 @@ class UIDataAdapter:
             ])
             prompt_legend = f"[bold]Token energy (OOD score):[/bold]{energy_legend}\n[bold]Green = in-distribution, Red = out-of-distribution[/bold]"
             
-            # Create energy heatmap
-            prompt_text = "".join(f"[on {self.energy_to_color(energy, min_energy, max_energy)}]{token}[/on]" 
-                                 for token, energy in zip(token_strings, energy_scores))
+            # Create energy heatmap with cursor
+            prompt_parts = []
+            for i, (token, energy) in enumerate(zip(token_strings, energy_scores)):
+                if cursor_position is not None and i == cursor_position:
+                    prompt_parts.append(f"[on {self.energy_to_color(energy, min_energy, max_energy)}]\\[{token}\\][/on]")
+                else:
+                    prompt_parts.append(f"[on {self.energy_to_color(energy, min_energy, max_energy)}]{token}[/on]")
+            
+            prompt_text = "".join(prompt_parts)
         else:
             prompt_text = self.explorer.get_prompt()
             prompt_legend = "[bold]No tokens to analyze energy[/bold]"

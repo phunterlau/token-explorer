@@ -51,6 +51,7 @@ class TokenExplorer(App):
     layer_display_mode = cycle(["none", "prob", "corr"])  # None, probabilities, correlations
     current_layer_mode = reactive(next(layer_display_mode))
     show_z_scores = reactive(False)  # Toggle for z-score display
+    # Note: cursor_position is now a regular instance variable, not reactive
 
     BINDINGS = [("e", "change_display_mode", "Mode"),
                 ("left,h", "pop_token", "Back"),
@@ -64,7 +65,15 @@ class TokenExplorer(App):
                 ("k", "select_prev", "Up"),
                 ("p", "toggle_layer_display", "Layer"),
                 ("z", "toggle_z_scores", "Z-Score"),
-                ("ctrl+r", "reset_prompt", "Reset")]
+                ("ctrl+r", "reset_prompt", "Reset"),
+                ("c", "toggle_cursor", "Cursor"),
+                # New VIM-inspired token navigation
+                ("ctrl+j", "cursor_next", "Token→"),
+                ("ctrl+k", "cursor_prev", "←Token"),
+                ("ctrl+w", "cursor_word_forward", "Word→"),
+                ("ctrl+b", "cursor_word_back", "←Word"),
+                ("ctrl+0", "cursor_start", "Start"),
+                ("ctrl+dollar", "cursor_end", "End")]
     
     # No custom commands class needed
     
@@ -87,6 +96,10 @@ class TokenExplorer(App):
         self.selected_row = 0  # Track currently selected token row
         # Store layer probability enabled state for UI
         self.layer_prob_enabled = enable_layer_prob
+        # Initialize token cursor position as regular instance variable (renamed to avoid Textual conflict)
+        self.token_cursor_position = 0
+        # Initialize cursor visibility (on by default)
+        self.cursor_visible = True
     
         
     def compose(self) -> ComposeResult:
@@ -116,23 +129,44 @@ class TokenExplorer(App):
             
     
     def _render_prompt(self):
-        # Use UIDataAdapter to render different display modes
+        # Use UIDataAdapter to render different display modes with cursor position
+        # Pass cursor position only if cursor is visible
+        cursor_pos = self.token_cursor_position if self.cursor_visible else None
+        
         if self.display_mode == "entropy":
-            prompt_text, prompt_legend = self.ui_adapter.render_entropy_display()
+            prompt_text, prompt_legend = self.ui_adapter.render_entropy_display(cursor_pos)
         elif self.display_mode == "prob":
-            prompt_text, prompt_legend = self.ui_adapter.render_probability_display()
+            prompt_text, prompt_legend = self.ui_adapter.render_probability_display(cursor_pos)
         elif self.display_mode == "influence":
-            prompt_text, prompt_legend = self.ui_adapter.render_influence_display()
+            prompt_text, prompt_legend = self.ui_adapter.render_influence_display(cursor_pos)
         elif self.display_mode == "local_bias":
-            prompt_text, prompt_legend = self.ui_adapter.render_local_bias_display()
+            prompt_text, prompt_legend = self.ui_adapter.render_local_bias_display(cursor_pos)
         elif self.display_mode == "energy":
-            prompt_text, prompt_legend = self.ui_adapter.render_energy_display()
+            prompt_text, prompt_legend = self.ui_adapter.render_energy_display(cursor_pos)
         else:
-            prompt_text = self.explorer.get_prompt()
+            # For plain prompt mode, show cursor only if visible
+            tokens = self.ui_adapter.get_prompt_tokens_display()
+            prompt_parts = []
+            for i, token in enumerate(tokens):
+                if self.cursor_visible and i == self.token_cursor_position:
+                    # Escape brackets to prevent Textual markup conflicts
+                    prompt_parts.append(f"\\[{token}\\]")
+                else:
+                    prompt_parts.append(token)
+            
+            prompt_text = "".join(prompt_parts)
             prompt_legend = ""
         
         # Add layer heatmap legend if enabled
         layer_legend = self.ui_adapter.render_layer_legend(self.current_layer_mode, TOKENS_TO_SHOW)
+
+        # Show current token in status line if cursor is visible
+        if self.cursor_visible:
+            tokens = self.ui_adapter.get_prompt_tokens_display()
+            current_token = tokens[self.token_cursor_position] if self.token_cursor_position < len(tokens) else ""
+            cursor_info = f" | [bold]Cursor:[/bold] {self.token_cursor_position+1}/{len(self.explorer.prompt_tokens)} \"{current_token}\""
+        else:
+            cursor_info = ""
 
         return dedent(f"""
 {prompt_text}
@@ -143,7 +177,7 @@ class TokenExplorer(App):
 
 {prompt_legend}
 {layer_legend}
-[bold]Prompt[/bold] {self.prompt_index+1}/{len(self.prompts)} tokens: {len(self.explorer.prompt_tokens)}
+[bold]Prompt[/bold] {self.prompt_index+1}/{len(self.prompts)} tokens: {len(self.explorer.prompt_tokens)}{cursor_info}
 """)
     
     def on_mount(self) -> None:
@@ -159,6 +193,7 @@ class TokenExplorer(App):
             self.prompts.append(self.explorer.get_prompt())
             self.prompt_index = (self.prompt_index + 1) % len(self.prompts)
             self.explorer.set_prompt(self.prompts[self.prompt_index])
+            self.token_cursor_position = 0  # Reset cursor for new prompt
             self.query_one("#results", Static).update(self._render_prompt())
             self._refresh_table()
 
@@ -167,18 +202,21 @@ class TokenExplorer(App):
             self.prompts.pop(self.prompt_index)
             self.prompt_index = (self.prompt_index - 1) % len(self.prompts)
             self.explorer.set_prompt(self.prompts[self.prompt_index])
+            self.token_cursor_position = 0  # Reset cursor for different prompt
             self.query_one("#results", Static).update(self._render_prompt())
             self._refresh_table()
     
     def action_increment_prompt(self):
         self.prompt_index = (self.prompt_index + 1) % len(self.prompts)
         self.explorer.set_prompt(self.prompts[self.prompt_index])
+        self.token_cursor_position = 0  # Reset cursor for different prompt
         self.query_one("#results", Static).update(self._render_prompt())
         self._refresh_table()
 
     def action_decrement_prompt(self):
         self.prompt_index = (self.prompt_index - 1) % len(self.prompts)
         self.explorer.set_prompt(self.prompts[self.prompt_index])
+        self.token_cursor_position = 0  # Reset cursor for different prompt
         self.query_one("#results", Static).update(self._render_prompt())
         self._refresh_table()
 
@@ -213,6 +251,9 @@ class TokenExplorer(App):
         if len(self.explorer.get_prompt_tokens()) > 1:
             self.explorer.pop_token()
             self.prompts[self.prompt_index] = self.explorer.get_prompt()
+            # Ensure cursor position is still valid after removing token
+            max_pos = len(self.explorer.get_prompt_tokens()) - 1
+            self.token_cursor_position = min(self.token_cursor_position, max_pos)
             self.query_one("#results", Static).update(self._render_prompt())
             self._refresh_table()
             
@@ -246,8 +287,71 @@ class TokenExplorer(App):
         """Reset prompt to original state"""
         self.explorer.set_prompt(self.original_prompt)
         self.prompts[self.prompt_index] = self.original_prompt
+        self.token_cursor_position = 0  # Reset cursor position
         self.query_one("#results", Static).update(self._render_prompt())
         self._refresh_table()
+
+    # New VIM-inspired token cursor navigation methods
+    def action_cursor_next(self):
+        """Move cursor to next token (VIM-inspired)"""
+        max_pos = len(self.explorer.get_prompt_tokens()) - 1
+        if self.token_cursor_position < max_pos:
+            self.token_cursor_position += 1
+            self.query_one("#results", Static).update(self._render_prompt())
+
+    def action_cursor_prev(self):
+        """Move cursor to previous token (VIM-inspired)"""
+        if self.token_cursor_position > 0:
+            self.token_cursor_position -= 1
+            self.query_one("#results", Static).update(self._render_prompt())
+
+    def action_cursor_word_forward(self):
+        """Move cursor to next word boundary (VIM w)"""
+        tokens = self.explorer.get_prompt_tokens_strings()
+        current_pos = self.token_cursor_position
+        max_pos = len(tokens) - 1
+        
+        # Find next word boundary (skip current word, find next non-space)
+        while current_pos < max_pos:
+            current_pos += 1
+            token = tokens[current_pos]
+            # Consider a new word if token doesn't start with space or punctuation
+            if not token.startswith((' ', '\t', '\n')) and token.isalnum():
+                break
+        
+        self.token_cursor_position = min(current_pos, max_pos)
+        self.query_one("#results", Static).update(self._render_prompt())
+
+    def action_cursor_word_back(self):
+        """Move cursor to previous word boundary (VIM b)"""
+        tokens = self.explorer.get_prompt_tokens_strings()
+        current_pos = self.token_cursor_position
+        
+        # Find previous word boundary
+        while current_pos > 0:
+            current_pos -= 1
+            token = tokens[current_pos]
+            # Consider a word start if token doesn't start with space or punctuation
+            if not token.startswith((' ', '\t', '\n')) and token.isalnum():
+                break
+        
+        self.token_cursor_position = max(current_pos, 0)
+        self.query_one("#results", Static).update(self._render_prompt())
+
+    def action_cursor_start(self):
+        """Move cursor to start of prompt (VIM 0)"""
+        self.token_cursor_position = 0
+        self.query_one("#results", Static).update(self._render_prompt())
+
+    def action_cursor_end(self):
+        """Move cursor to end of prompt (VIM $)"""
+        self.token_cursor_position = len(self.explorer.get_prompt_tokens()) - 1
+        self.query_one("#results", Static).update(self._render_prompt())
+
+    def action_toggle_cursor(self):
+        """Toggle cursor visibility on/off"""
+        self.cursor_visible = not self.cursor_visible
+        self.query_one("#results", Static).update(self._render_prompt())
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Token Explorer Application')
