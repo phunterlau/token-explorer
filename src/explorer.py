@@ -18,6 +18,8 @@ try:
 except ImportError:
     GEMMA3_AVAILABLE = False
 
+from src.hidden_state_analysis import HiddenStateAnalyzer
+
 class Explorer:
     def __init__(self, model_name="Qwen/Qwen2.5-0.5B", use_bf16=False, enable_layer_prob=False, seed=None):
         """
@@ -78,6 +80,8 @@ class Explorer:
             
         # Store layer probability setting
         self.enable_layer_prob = enable_layer_prob
+        
+        self.hidden_state_analyzer = HiddenStateAnalyzer(self.model)
             
         # Constants for token influence calculation
         # Estimate total heads based on model architecture
@@ -96,6 +100,11 @@ class Explorer:
         # token_correlations is dict mapping token_id to correlation list
         # token_influences is dict mapping token_id to influence list
         self._cache: OrderedDict[Tuple[int, ...], Tuple[List[torch.Tensor], Dict[int, List[float]], Dict[int, List[float]]]] = OrderedDict()
+
+    def get_hidden_state_similarities(self, token_position=None):
+        """Get hidden state similarities across all layers for a specific token position"""
+        input_ids = torch.tensor([self.prompt_tokens]).to(self.device)
+        return self.hidden_state_analyzer.analyze_token_evolution(input_ids, token_position)
     
     def _manage_cache(self, key: Tuple[int, ...], value: Tuple[List[torch.Tensor], Dict[int, List[float]], Dict[int, List[float]]]):
         """

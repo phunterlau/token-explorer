@@ -5,7 +5,7 @@ This module separates UI formatting logic from core analysis logic,
 making the code more maintainable and testable.
 """
 
-from src.utils import entropy_to_color, probability_to_color
+from src.utils import entropy_to_color, probability_to_color, influence_to_color, bias_to_color, energy_to_color
 
 
 class UIDataAdapter:
@@ -98,32 +98,6 @@ class UIDataAdapter:
         
         return [tuple(headers)] + rows
     
-    def influence_to_color(self, influence):
-        """Convert influence score to a color (green to purple)"""
-        # Green (low) to purple (high)
-        return f"#{0:02x}{int(255 * (1 - influence)):02x}{int(255 * influence):02x}"
-        
-    def bias_to_color(self, bias):
-        """Convert local token bias score to a color (orange to blue)"""
-        # Orange (low) to blue (high)
-        scaled_bias = min(max(bias, 0.0), 1.0)  # Ensure bias is in [0,1]
-        return f"#{int(255 * (1 - scaled_bias)):02x}{int(128 * (1 - scaled_bias)):02x}{int(255 * scaled_bias):02x}"
-        
-    def energy_to_color(self, energy, min_energy, max_energy):
-        """Convert energy score to a color (green to red)
-        
-        Lower energy (green) = in-distribution
-        Higher energy (red) = out-of-distribution
-        """
-        # Normalize energy to [0,1] range
-        if max_energy == min_energy:
-            normalized = 0.5
-        else:
-            normalized = (energy - min_energy) / (max_energy - min_energy)
-            
-        # Green (low energy, in-distribution) to red (high energy, out-of-distribution)
-        return f"#{int(255 * normalized):02x}{int(255 * (1 - normalized)):02x}00"
-    
     def render_entropy_display(self, cursor_position=None):
         """Render entropy visualization with optional cursor"""
         entropy_legend = "".join([
@@ -182,7 +156,7 @@ class UIDataAdapter:
             
             # Create influence legend
             influence_legend = "".join([
-                f"[on {self.influence_to_color(i/10)}] {i/10:.2f} [/on]"
+                f"[on {influence_to_color(i/10)}] {i/10:.2f} [/on]"
                 for i in range(11)
             ])
             prompt_legend = f"[bold]Token attention influence:[/bold]{influence_legend}"
@@ -192,9 +166,9 @@ class UIDataAdapter:
             prompt_parts = []
             for i, (token, score) in enumerate(zip(token_strings, influence_scores)):
                 if cursor_position is not None and i == cursor_position:
-                    prompt_parts.append(f"[on {self.influence_to_color(score)}]\\[{token}\\][/on]")
+                    prompt_parts.append(f"[on {influence_to_color(score)}]\\[{token}\\][/on]")
                 else:
-                    prompt_parts.append(f"[on {self.influence_to_color(score)}]{token}[/on]")
+                    prompt_parts.append(f"[on {influence_to_color(score)}]{token}[/on]")
             
             prompt_text = "".join(prompt_parts)
         else:
@@ -219,7 +193,7 @@ class UIDataAdapter:
             
             # Create bias legend
             bias_legend = "".join([
-                f"[on {self.bias_to_color(i/10)}] {i/10:.2f} [/on]"
+                f"[on {bias_to_color(i/10)}] {i/10:.2f} [/on]"
                 for i in range(11)
             ])
             prompt_legend = f"[bold]Local token bias:[/bold]{bias_legend}"
@@ -228,9 +202,9 @@ class UIDataAdapter:
             prompt_parts = []
             for i, (token, bias) in enumerate(zip(token_strings, normalized_bias)):
                 if cursor_position is not None and i == cursor_position:
-                    prompt_parts.append(f"[on {self.bias_to_color(bias)}]\\[{token}\\][/on]")
+                    prompt_parts.append(f"[on {bias_to_color(bias)}]\\[{token}\\][/on]")
                 else:
-                    prompt_parts.append(f"[on {self.bias_to_color(bias)}]{token}[/on]")
+                    prompt_parts.append(f"[on {bias_to_color(bias)}]{token}[/on]")
             
             prompt_text = "".join(prompt_parts)
         else:
@@ -254,7 +228,7 @@ class UIDataAdapter:
             # Lower energy (green) = in-distribution
             # Higher energy (red) = out-of-distribution
             energy_legend = "".join([
-                f"[on {self.energy_to_color(min_energy + i*(max_energy-min_energy)/10, min_energy, max_energy)}] {i/10:.1f} [/on]"
+                f"[on {energy_to_color(min_energy + i*(max_energy-min_energy)/10, min_energy, max_energy)}] {i/10:.1f} [/on]"
                 for i in range(11)
             ])
             prompt_legend = f"[bold]Token energy (OOD score):[/bold]{energy_legend}\n[bold]Green = in-distribution, Red = out-of-distribution[/bold]"
@@ -263,14 +237,52 @@ class UIDataAdapter:
             prompt_parts = []
             for i, (token, energy) in enumerate(zip(token_strings, energy_scores)):
                 if cursor_position is not None and i == cursor_position:
-                    prompt_parts.append(f"[on {self.energy_to_color(energy, min_energy, max_energy)}]\\[{token}\\][/on]")
+                    prompt_parts.append(f"[on {energy_to_color(energy, min_energy, max_energy)}]\\[{token}\\][/on]")
                 else:
-                    prompt_parts.append(f"[on {self.energy_to_color(energy, min_energy, max_energy)}]{token}[/on]")
+                    prompt_parts.append(f"[on {energy_to_color(energy, min_energy, max_energy)}]{token}[/on]")
             
             prompt_text = "".join(prompt_parts)
         else:
             prompt_text = self.explorer.get_prompt()
             prompt_legend = "[bold]No tokens to analyze energy[/bold]"
+        
+        return prompt_text, prompt_legend
+
+    def render_hidden_state_similarity_display(self, cursor_position=None):
+        """Render hidden state similarity visualization."""
+        token_strings = self.get_prompt_tokens_display()
+        
+        # Build prompt text with cursor indicator
+        prompt_parts = []
+        for i, token in enumerate(token_strings):
+            if cursor_position is not None and i == cursor_position:
+                prompt_parts.append(f"[on blue]\\[{token}\\][/on]")
+            else:
+                prompt_parts.append(token)
+        
+        prompt_text = "".join(prompt_parts)
+
+        # Get hidden state similarity data
+        similarities = self.explorer.get_hidden_state_similarities(cursor_position)
+        
+        if not similarities:
+            return prompt_text, "[bold]No hidden state data available.[/bold]"
+
+        legend_parts = [
+            f"[bold]Hidden State Similarity to Final Layer[/bold] | Token: '[u]{token_strings[cursor_position]}[/u]'",
+            "─" * 80,
+        ]
+        
+        heatmap = ""
+        for sim in similarities:
+            color = probability_to_color(sim)
+            heatmap += f"[on {color}] [/on]"
+
+        legend_parts.append(heatmap)
+        legend_parts.append("")
+        legend_parts.append("[bold]Hotkeys:[/bold] [yellow]ctrl+j[/yellow]/[yellow]ctrl+k[/yellow] to move cursor")
+
+        prompt_legend = "\n".join(legend_parts)
         
         return prompt_text, prompt_legend
     

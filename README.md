@@ -49,6 +49,7 @@ The application supports several command-line parameters:
 | `--input <path>`, `-i <path>` | Specify a text file to use as the initial prompt |
 | `--bf16` | Load the model in bfloat16 precision to reduce memory usage |
 | `--layer_prob` | Enable layer probability and correlation calculations |
+| `--cross_layer` | Enable cross-layer feature analysis |
 | `--seed <integer>` | Set the random seed for generation (uses time-based seed if not provided) |
 | `--config <path>` | Path to configuration file (default: config.toml) |
 
@@ -179,6 +180,9 @@ Color scale: Orange (low similarity) to Blue (high similarity)
 
 ### 6. Token Energy (Out-of-Distribution Detection)
 Displays the Helmholtz free energy for each token, identifying tokens that may be out-of-distribution.
+
+### 7. Hidden State Similarity
+Visualizes how a token's representation evolves across the model's layers. It does this by calculating the cosine similarity of the token's hidden state at each layer with its hidden state at the final layer. This provides a real, data-driven view of how the model's understanding of a token converges as it passes through the network.
 
 How it works:
 1. Computes energy as `-T * logsumexp(logits / T)` for each token position

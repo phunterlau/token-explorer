@@ -48,3 +48,29 @@ def entropy_to_color(entropy, alpha=1.0):
     
     # Return rgba string
     return f"rgba({value}, {value}, {value}, {alpha})"
+
+def influence_to_color(influence):
+    """Convert influence score to a color (green to purple)"""
+    # Green (low) to purple (high)
+    return f"#{0:02x}{int(255 * (1 - influence)):02x}{int(255 * influence):02x}"
+
+def bias_to_color(bias):
+    """Convert local token bias score to a color (orange to blue)"""
+    # Orange (low) to blue (high)
+    scaled_bias = min(max(bias, 0.0), 1.0)  # Ensure bias is in [0,1]
+    return f"#{int(255 * (1 - scaled_bias)):02x}{int(128 * (1 - scaled_bias)):02x}{int(255 * scaled_bias):02x}"
+
+def energy_to_color(energy, min_energy, max_energy):
+    """Convert energy score to a color (green to red)
+    
+    Lower energy (green) = in-distribution
+    Higher energy (red) = out-of-distribution
+    """
+    # Normalize energy to [0,1] range
+    if max_energy == min_energy:
+        normalized = 0.5
+    else:
+        normalized = (energy - min_energy) / (max_energy - min_energy)
+        
+    # Green (low energy, in-distribution) to red (high energy, out-of-distribution)
+    return f"#{int(255 * normalized):02x}{int(255 * (1 - normalized)):02x}00"
