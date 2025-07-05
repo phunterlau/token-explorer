@@ -172,38 +172,208 @@ class Explorer:
         self.prompt_tokens = self.tokenizer.encode(prompt_text)
         return self
     
+    def _identify_informative_layers(self, layer_probs, entropy_threshold=0.01, variance_threshold=0.001):
+        """
+        Identify layers that contribute significant information based on entropy changes and variance.
+        
+        Args:
+            layer_probs: Batched tensor of layer probabilities [L, V]
+            entropy_threshold: Minimum entropy change to consider a layer informative
+            variance_threshold: Minimum variance to consider a layer informative
+            
+        Returns:
+            List of informative layer indices
+        """
+        if not isinstance(layer_probs, torch.Tensor) or len(layer_probs.shape) != 2:
+            # Fallback: use all layers if not in batched format
+            return list(range(len(layer_probs)))
+        
+        informative_layers = []
+        
+        # Calculate entropy for each layer
+        entropies = []
+        for i in range(layer_probs.shape[0]):
+            layer_prob = layer_probs[i]
+            # Add small epsilon to avoid log(0)
+            entropy = -torch.sum(layer_prob * torch.log(layer_prob + 1e-12))
+            entropies.append(entropy.item())
+        
+        # Calculate variance for each layer
+        variances = torch.var(layer_probs, dim=1).tolist()
+        
+        # Identify layers with significant entropy changes
+        for i in range(len(entropies)):
+            # Check entropy change from previous layer
+            if i == 0:
+                entropy_change = entropies[i]  # First layer always included
+            else:
+                entropy_change = abs(entropies[i] - entropies[i-1])
+            
+            # Include layer if it has significant entropy change or variance
+            if entropy_change > entropy_threshold or variances[i] > variance_threshold:
+                informative_layers.append(i)
+        
+        # Ensure we always include at least the first, middle, and last layers
+        num_layers = layer_probs.shape[0]
+        essential_layers = [0, num_layers // 2, num_layers - 1]
+        for layer_idx in essential_layers:
+            if layer_idx not in informative_layers:
+                informative_layers.append(layer_idx)
+        
+        # Sort and return
+        informative_layers.sort()
+        return informative_layers
+
+    def _calculate_vectorized_correlations(self, token_ids, layer_probs, selective_layers=None):
+        """
+        Calculate correlations for multiple tokens simultaneously using vectorized operations.
+        Optionally process only selective layers for performance.
+        
+        Args:
+            token_ids: List of token IDs to calculate correlations for
+            layer_probs: Batched tensor of layer probabilities [L, V] or list of tensors
+            selective_layers: Optional list of layer indices to process (None = all layers)
+            
+        Returns:
+            Dict mapping token_id to list of correlation scores
+        """
+        if not token_ids:
+            return {}
+        
+        # Handle batched tensor format (optimized path)
+        if isinstance(layer_probs, torch.Tensor) and len(layer_probs.shape) == 2:
+            # Apply selective layer processing if specified
+            if selective_layers is not None:
+                selected_probs = layer_probs[selective_layers]  # Shape: [S, V] where S = selected layers
+            else:
+                selected_probs = layer_probs
+                selective_layers = list(range(layer_probs.shape[0]))
+            
+            # Vectorized extraction for all tokens at once
+            token_probs_matrix = selected_probs[:, token_ids]  # Shape: [S, N] where N = num tokens
+            
+            # Vectorized normalization per token
+            max_probs = torch.max(token_probs_matrix, dim=0, keepdim=True)[0]  # Shape: [1, N]
+            normalized_correlations = token_probs_matrix / (max_probs + 1e-12)  # Shape: [S, N]
+            
+            # Convert to dictionary format, expanding selective layers back to full layer count
+            correlations_dict = {}
+            for i, token_id in enumerate(token_ids):
+                if selective_layers is not None and len(selective_layers) < layer_probs.shape[0]:
+                    # Expand correlations to full layer count with interpolation
+                    full_correlations = self._expand_selective_correlations(
+                        normalized_correlations[:, i].tolist(), 
+                        selective_layers, 
+                        layer_probs.shape[0]
+                    )
+                    correlations_dict[token_id] = full_correlations
+                else:
+                    correlations_dict[token_id] = normalized_correlations[:, i].tolist()
+            
+            return correlations_dict
+        
+        # Handle list format (backward compatibility)
+        elif isinstance(layer_probs, list) and len(layer_probs) > 0:
+            correlations_dict = {}
+            
+            # Apply selective layer processing
+            if selective_layers is not None:
+                selected_layer_probs = [layer_probs[i] for i in selective_layers if i < len(layer_probs)]
+            else:
+                selected_layer_probs = layer_probs
+                selective_layers = list(range(len(layer_probs)))
+            
+            for token_id in token_ids:
+                correlations = []
+                for layer_prob in selected_layer_probs:
+                    layer_token_prob = layer_prob[token_id].item()
+                    correlations.append(layer_token_prob)
+                
+                # Normalize correlations
+                max_corr = max(correlations) if correlations else 0
+                if max_corr > 0:
+                    correlations = [c/max_corr for c in correlations]
+                
+                # Expand to full layer count if using selective layers
+                if selective_layers is not None and len(selective_layers) < len(layer_probs):
+                    correlations = self._expand_selective_correlations(
+                        correlations, selective_layers, len(layer_probs)
+                    )
+                
+                correlations_dict[token_id] = correlations
+            
+            return correlations_dict
+        
+        # Fallback for empty or invalid input
+        return {token_id: [] for token_id in token_ids}
+
+    def _expand_selective_correlations(self, selective_correlations, selective_layers, total_layers):
+        """
+        Expand correlations from selective layers to full layer count using interpolation.
+        
+        Args:
+            selective_correlations: List of correlation values for selective layers
+            selective_layers: List of layer indices that were processed
+            total_layers: Total number of layers in the model
+            
+        Returns:
+            List of correlation values for all layers
+        """
+        if len(selective_layers) == total_layers:
+            return selective_correlations
+        
+        full_correlations = [0.0] * total_layers
+        
+        # Fill in known values
+        for i, layer_idx in enumerate(selective_layers):
+            if layer_idx < total_layers:
+                full_correlations[layer_idx] = selective_correlations[i]
+        
+        # Interpolate missing values
+        for i in range(total_layers):
+            if i not in selective_layers:
+                # Find nearest known values for interpolation
+                left_idx = None
+                right_idx = None
+                
+                for j in range(i-1, -1, -1):
+                    if j in selective_layers:
+                        left_idx = j
+                        break
+                
+                for j in range(i+1, total_layers):
+                    if j in selective_layers:
+                        right_idx = j
+                        break
+                
+                # Interpolate
+                if left_idx is not None and right_idx is not None:
+                    left_val = full_correlations[left_idx]
+                    right_val = full_correlations[right_idx]
+                    weight = (i - left_idx) / (right_idx - left_idx)
+                    full_correlations[i] = left_val + weight * (right_val - left_val)
+                elif left_idx is not None:
+                    full_correlations[i] = full_correlations[left_idx]
+                elif right_idx is not None:
+                    full_correlations[i] = full_correlations[right_idx]
+        
+        return full_correlations
+
     def _calculate_layer_correlation(self, token_id, layer_probs):
         """
         Calculate correlation score for each layer for a given token.
-        Uses same approach as score_example.py's toxic_scores, but for a single token.
-        Higher score means the layer more strongly predicts this token.
+        Uses vectorized correlation calculation for efficiency.
         
         Args:
             token_id: The token ID to calculate correlation for
-            layer_probs: List of probability distributions from each layer
+            layer_probs: List of probability distributions from each layer or batched tensor
             
         Returns:
             List of correlation scores for each layer
         """
-        # Check if we have batched tensor format (from optimization)
-        if len(layer_probs) > 0 and hasattr(layer_probs[0], 'shape') and len(layer_probs[0].shape) > 1:
-            # If layer_probs[0] is a batched tensor [L, V], extract correlations efficiently
-            batched_probs = layer_probs[0]  # Shape: [L, V]
-            correlations = batched_probs[:, token_id].tolist()  # Single indexing operation
-        else:
-            # Original method for backward compatibility
-            correlations = []
-            for layer_prob in layer_probs:
-                # Get probability for this token at this layer
-                layer_token_prob = layer_prob[token_id].item()
-                correlations.append(layer_token_prob)
-        
-        # Normalize correlations to [0,1] range
-        max_corr = max(correlations) if correlations else 0
-        if max_corr > 0:
-            correlations = [c/max_corr for c in correlations]
-            
-        return correlations
+        # Use vectorized correlation calculation
+        correlations_dict = self._calculate_vectorized_correlations([token_id], layer_probs)
+        return correlations_dict.get(token_id, [])
 
     def get_prompt_token_probabilities(self):
         """
@@ -579,7 +749,13 @@ class Explorer:
             print(f"Cache hit for token sequence of length {len(cache_key)}")
             layer_probs, token_correlations, token_influences = self._cache.pop(cache_key)
             self._cache[cache_key] = (layer_probs, token_correlations, token_influences)
-            next_token_probs = layer_probs[-1] if layer_probs else None  # Final layer probabilities
+            # Handle both tensor and list formats for layer_probs
+            if isinstance(layer_probs, torch.Tensor) and layer_probs.numel() > 0:
+                next_token_probs = layer_probs[-1]  # Final layer probabilities
+            elif isinstance(layer_probs, list) and len(layer_probs) > 0:
+                next_token_probs = layer_probs[-1]  # Final layer probabilities
+            else:
+                next_token_probs = None
             
             # We still need to calculate z_scores for cache hits, so get the logits
             if next_token_probs is None:
@@ -601,7 +777,7 @@ class Explorer:
             z_scores = self.calculate_z_scores(next_token_logits)
         
         # If not in cache or layer_probs is empty (when enable_layer_prob was previously False)
-        if not cache_key in self._cache or not layer_probs:
+        if not cache_key in self._cache or (isinstance(layer_probs, list) and not layer_probs) or (isinstance(layer_probs, torch.Tensor) and layer_probs.numel() == 0):
             # Convert token IDs to tensor and create input
             input_ids = torch.tensor([self.prompt_tokens]).to(self.device)
             
@@ -643,8 +819,13 @@ class Explorer:
                 # Batched softmax
                 all_layer_probs = torch.nn.functional.softmax(all_layer_logits, dim=-1).to(torch.float32)  # Shape: [L, V]
                 
-                # Convert to list format for compatibility with existing code
-                layer_probs = [all_layer_probs[i] for i in range(all_layer_probs.shape[0])]
+                # SELECTIVE LAYERS OPTIMIZATION: Identify informative layers
+                informative_layers = self._identify_informative_layers(all_layer_probs)
+                print(f"Using {len(informative_layers)}/{all_layer_probs.shape[0]} informative layers: {informative_layers}")
+                
+                # Store both full probabilities and selective layers info for correlation calculations
+                layer_probs = all_layer_probs  # Keep as tensor for vectorized correlations
+                self._selective_layers = informative_layers  # Store for correlation calculations
                 
                 # Cache miss - Store in cache
                 print(f"Cache miss for token sequence of length {len(cache_key)}")
@@ -668,7 +849,9 @@ class Explorer:
                     if self.enable_layer_prob:
                         # Get correlations from cache or calculate and cache them
                         if idx not in token_correlations:
-                            correlations = self._calculate_layer_correlation(idx, layer_probs)
+                            # Use selective layers if available
+                            selective_layers = getattr(self, '_selective_layers', None)
+                            correlations = self._calculate_vectorized_correlations([idx], layer_probs, selective_layers)[idx]
                             token_correlations[idx] = correlations
                         else:
                             correlations = token_correlations[idx]
@@ -690,8 +873,12 @@ class Explorer:
                     }
                     
                     # Add layer-specific data only if enabled
-                    if self.enable_layer_prob and layer_probs:
-                        token_obj["layer_probs"] = [layer_prob[idx].item() for layer_prob in layer_probs]
+                    if self.enable_layer_prob and layer_probs is not None:
+                        # Handle both tensor and list formats
+                        if isinstance(layer_probs, torch.Tensor):
+                            token_obj["layer_probs"] = layer_probs[:, idx].tolist()
+                        else:
+                            token_obj["layer_probs"] = [layer_prob[idx].item() for layer_prob in layer_probs]
                         token_obj["layer_correlations"] = correlations
                     else:
                         # Use placeholder values when disabled
@@ -737,14 +924,18 @@ class Explorer:
                 }
                 
                 # Add layer-specific data only if enabled
-                if self.enable_layer_prob and layer_probs:
-                    token_obj["layer_probs"] = [layer_prob[idx].item() for layer_prob in layer_probs]
+                if self.enable_layer_prob and layer_probs is not None:
+                    # Handle both tensor and list formats
+                    if isinstance(layer_probs, torch.Tensor):
+                        token_obj["layer_probs"] = layer_probs[:, idx.item()].tolist()
+                    else:
+                        token_obj["layer_probs"] = [layer_prob[idx].item() for layer_prob in layer_probs]
                     token_obj["layer_correlations"] = correlations
                 else:
                     # Use placeholder values when disabled
                     token_obj["layer_probs"] = empty_layer_probs
                     token_obj["layer_correlations"] = empty_correlations
-                    
+                
                 results.append(token_obj)
                 
             return results
