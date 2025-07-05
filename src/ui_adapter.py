@@ -5,7 +5,7 @@ This module separates UI formatting logic from core analysis logic,
 making the code more maintainable and testable.
 """
 
-from src.utils import entropy_to_color, probability_to_color, influence_to_color, bias_to_color, energy_to_color
+from src.utils import entropy_to_color, probability_to_color, influence_to_color, bias_to_color, energy_to_color, gradient_attribution_to_color
 
 
 class UIDataAdapter:
@@ -248,10 +248,61 @@ class UIDataAdapter:
         
         return prompt_text, prompt_legend
 
+    def render_gradient_attribution_display(self, cursor_position=None, method='saliency'):
+        """Render gradient attribution visualization with optional cursor"""
+        token_strings = self.get_prompt_tokens_display()
+        
+        if cursor_position is None or cursor_position >= len(token_strings):
+            prompt_text = "".join(token_strings)
+            prompt_legend = "[bold]Press 'c' to enable cursor and see gradient attribution.[/bold]"
+            return prompt_text, prompt_legend
+            
+        # Get the token at the cursor position
+        token_id = self.explorer.prompt_tokens[cursor_position]
+        
+        # Get gradient attribution scores
+        attribution_scores = self.explorer.get_gradient_attribution(token_id, method)
+        
+        if attribution_scores:
+            # Create attribution legend
+            attribution_legend = "".join([
+                f"[on {gradient_attribution_to_color(i/10)}] {i/10:.2f} [/on]"
+                for i in range(11)
+            ])
+            
+            method_names = {
+                'saliency': 'Saliency',
+                'integrated_gradients': 'Integrated Gradients',
+                'input_x_gradient': 'Input × Gradient'
+            }
+            method_display = method_names.get(method, method)
+            
+            prompt_legend = f"[bold]Gradient Attribution ({method_display}) for '{token_strings[cursor_position]}':[/bold]{attribution_legend}\n[bold]Green = less important, Blue = more important[/bold]"
+            
+            # Create attribution heatmap with cursor
+            prompt_parts = []
+            for i, (token, score) in enumerate(zip(token_strings, attribution_scores)):
+                if i == cursor_position:
+                    prompt_parts.append(f"[on {gradient_attribution_to_color(score)}]\\[{token}\\][/on]")
+                else:
+                    prompt_parts.append(f"[on {gradient_attribution_to_color(score)}]{token}[/on]")
+            
+            prompt_text = "".join(prompt_parts)
+        else:
+            prompt_text = self.explorer.get_prompt()
+            prompt_legend = "[bold]No gradient attribution data available[/bold]"
+            
+        return prompt_text, prompt_legend
+
     def render_hidden_state_similarity_display(self, cursor_position=None):
         """Render hidden state similarity visualization."""
         token_strings = self.get_prompt_tokens_display()
         
+        if cursor_position is None or cursor_position >= len(token_strings):
+            prompt_text = "".join(token_strings)
+            prompt_legend = "[bold]Press 'c' to enable cursor and see hidden state similarity.[/bold]"
+            return prompt_text, prompt_legend
+            
         # Build prompt text with cursor indicator
         prompt_parts = []
         for i, token in enumerate(token_strings):
@@ -290,6 +341,11 @@ class UIDataAdapter:
         """Render residual stream analysis visualization."""
         token_strings = self.get_prompt_tokens_display()
         
+        if cursor_position is None or cursor_position >= len(token_strings):
+            prompt_text = "".join(token_strings)
+            prompt_legend = "[bold]Press 'c' to enable cursor and see residual stream analysis.[/bold]"
+            return prompt_text, prompt_legend
+            
         # Build prompt text with cursor indicator
         prompt_parts = []
         for i, token in enumerate(token_strings):

@@ -46,7 +46,7 @@ MAX_PROMPTS = config["prompt"]["max_prompts"]
 class TokenExplorer(App):
     """Main application class."""
 
-    display_modes = cycle(["prompt", "prob", "entropy", "influence", "local_bias", "energy", "hidden_state_similarity", "residual_stream"])
+    display_modes = cycle(["prompt", "prob", "entropy", "influence", "local_bias", "energy", "gradient_attribution", "hidden_state_similarity", "residual_stream"])
     display_mode = reactive(next(display_modes))
     layer_display_mode = cycle(["none", "prob", "corr"])  # None, probabilities, correlations
     current_layer_mode = reactive(next(layer_display_mode))
@@ -147,6 +147,8 @@ class TokenExplorer(App):
             prompt_text, prompt_legend = self.ui_adapter.render_local_bias_display(cursor_pos)
         elif self.display_mode == "energy":
             prompt_text, prompt_legend = self.ui_adapter.render_energy_display(cursor_pos)
+        elif self.display_mode == "gradient_attribution":
+            prompt_text, prompt_legend = self.ui_adapter.render_gradient_attribution_display(cursor_pos)
         elif self.display_mode == "hidden_state_similarity":
             prompt_text, prompt_legend = self.ui_adapter.render_hidden_state_similarity_display(cursor_pos)
         elif self.display_mode == "residual_stream":
@@ -172,7 +174,8 @@ class TokenExplorer(App):
         if self.cursor_visible:
             tokens = self.ui_adapter.get_prompt_tokens_display()
             current_token = tokens[self.token_cursor_position] if self.token_cursor_position < len(tokens) else ""
-            cursor_info = f" | [bold]Cursor:[/bold] {self.token_cursor_position+1}/{len(self.explorer.prompt_tokens)} \"{current_token}\""
+            hotkey_info = " | [bold]Hotkeys:[/bold] [yellow]ctrl+j[/yellow]/[yellow]ctrl+k[/yellow] to move"
+            cursor_info = f" | [bold]Cursor:[/bold] {self.token_cursor_position+1}/{len(self.explorer.prompt_tokens)} \"{current_token}\"{hotkey_info}"
         else:
             cursor_info = ""
 

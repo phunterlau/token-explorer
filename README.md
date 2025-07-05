@@ -201,6 +201,19 @@ This visualization helps identify:
 - Potential errors or inconsistencies in the model's understanding
 - Points where the model might be uncertain or confused
 
+### 9. Gradient-Based Attribution Analysis
+This feature, inspired by the work on `circuit-tracer`, provides a powerful way to understand which input tokens are most influential in predicting a subsequent token. It uses gradient-based methods to attribute the model's prediction to the input tokens.
+
+**Key Features**:
+- **Three Attribution Methods**:
+  - **Saliency**: Simple gradient of the output with respect to the input.
+  - **Input × Gradient**: Element-wise product of the input and its gradient.
+  - **Integrated Gradients**: A more robust method that integrates gradients along a path from a baseline to the input.
+- **Interactive Visualization**: The attribution scores are visualized as a heatmap over the input tokens, making it easy to see which tokens are most important.
+- **Cursor Integration**: The analysis is performed for the token currently under the cursor, allowing for real-time exploration of the model's reasoning.
+
+**Color scale**: Green (less important) to Blue (more important)
+
 ## Advanced Features
 
 ### Layer Analysis

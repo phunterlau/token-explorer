@@ -20,6 +20,7 @@ except ImportError:
 
 from src.hidden_state_analysis import HiddenStateAnalyzer
 from src.residual_stream_analysis import ResidualStreamAnalyzer
+from src.gradient_attribution import GradientAttribution
 
 class Explorer:
     def __init__(self, model_name="Qwen/Qwen2.5-0.5B", use_bf16=False, enable_layer_prob=False, seed=None):
@@ -84,6 +85,7 @@ class Explorer:
         
         self.hidden_state_analyzer = HiddenStateAnalyzer(self.model)
         self.residual_stream_analyzer = ResidualStreamAnalyzer(self.model)
+        self.gradient_attribution = GradientAttribution(self.model, self.tokenizer)
             
         # Constants for token influence calculation
         # Estimate total heads based on model architecture
@@ -122,6 +124,29 @@ class Explorer:
         """Get component contributions for a specific token and layer."""
         input_ids = torch.tensor([self.prompt_tokens]).to(self.device)
         return self.residual_stream_analyzer.get_component_contributions(input_ids, token_position, layer)
+
+    def get_gradient_attribution(self, token_id, method='saliency'):
+        """
+        Get gradient-based attribution scores for the given token.
+        
+        Args:
+            token_id: The token ID to calculate attribution for
+            method: Attribution method ('saliency', 'integrated_gradients', 'input_x_gradient')
+            
+        Returns:
+            List of attribution scores for each token in the prompt
+        """
+        if not self.prompt_tokens:
+            return []
+        
+        if method == 'saliency':
+            return self.gradient_attribution.calculate_saliency(self.prompt_tokens, token_id)
+        elif method == 'integrated_gradients':
+            return self.gradient_attribution.calculate_integrated_gradients(self.prompt_tokens, token_id)
+        elif method == 'input_x_gradient':
+            return self.gradient_attribution.calculate_input_x_gradient(self.prompt_tokens, token_id)
+        else:
+            raise ValueError(f"Unknown attribution method: {method}")
     
     def _manage_cache(self, key: Tuple[int, ...], value: Tuple[List[torch.Tensor], Dict[int, List[float]], Dict[int, List[float]]]):
         """

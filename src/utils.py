@@ -74,3 +74,15 @@ def energy_to_color(energy, min_energy, max_energy):
         
     # Green (low energy, in-distribution) to red (high energy, out-of-distribution)
     return f"#{int(255 * normalized):02x}{int(255 * (1 - normalized)):02x}00"
+
+def gradient_attribution_to_color(attribution):
+    """Convert gradient attribution score to a color (green to blue)
+    
+    Lower attribution (green) = less important
+    Higher attribution (blue) = more important
+    """
+    # Ensure attribution is in [0,1] range
+    attribution = min(max(attribution, 0.0), 1.0)
+    
+    # Green (low attribution) to blue (high attribution)
+    return f"#{0:02x}{int(255 * (1 - attribution)):02x}{int(255 * attribution):02x}"
