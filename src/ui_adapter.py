@@ -285,6 +285,70 @@ class UIDataAdapter:
         prompt_legend = "\n".join(legend_parts)
         
         return prompt_text, prompt_legend
+
+    def render_residual_stream_display(self, cursor_position=None, current_layer=0):
+        """Render residual stream analysis visualization."""
+        token_strings = self.get_prompt_tokens_display()
+        
+        # Build prompt text with cursor indicator
+        prompt_parts = []
+        for i, token in enumerate(token_strings):
+            if cursor_position is not None and i == cursor_position:
+                prompt_parts.append(f"[on blue]\\[{token}\\][/on]")
+            else:
+                prompt_parts.append(token)
+        
+        prompt_text = "".join(prompt_parts)
+
+        # Get residual stream data
+        magnitudes = self.explorer.get_residual_stream_magnitudes(cursor_position)
+        heatmap = self.explorer.get_information_flow_heatmap()
+        contributions = self.explorer.get_component_contributions(cursor_position, current_layer)
+
+        if not magnitudes:
+            return prompt_text, "[bold]No residual stream data available.[/bold]"
+
+        legend_parts = [
+            f"[bold]Residual Stream Analysis[/bold] | Token: '[u]{token_strings[cursor_position]}[/u]' | Layer: {current_layer}",
+            "─" * 80,
+        ]
+
+        # Component contributions
+        legend_parts.append(f"[bold u]Component Contributions at Layer {current_layer}[/bold u]")
+        if contributions:
+            attn_bar = "█" * int(50 * contributions.get('attention', 0))
+            mlp_bar = "█" * int(50 * contributions.get('mlp', 0))
+            legend_parts.append(f"  Attention: {attn_bar} {contributions.get('attention', 0):.2f}")
+            legend_parts.append(f"  MLP:       {mlp_bar} {contributions.get('mlp', 0):.2f}")
+
+        # Layer-wise magnitude (compact)
+        legend_parts.append("\n[bold u]Layer-wise Residual Magnitude[/bold u]")
+        max_magnitude = max(magnitudes) if magnitudes else 1
+        layer_magnitude_str = ""
+        for i, mag in enumerate(magnitudes):
+            if i % 2 == 0:
+                bar = "█" * int(10 * mag / max_magnitude)
+                layer_magnitude_str += f" L{i:02d}:{bar} {mag:.2f} "
+        legend_parts.append(layer_magnitude_str)
+
+        # Information flow heatmap (compact)
+        legend_parts.append("\n[bold u]Information Flow Heatmap[/bold u]")
+        recent_tokens = token_strings[-15:]
+        header = "      " + "".join(f"{s:<{len(s)+1}}" for s in recent_tokens)
+        legend_parts.append(header)
+        for i, layer_mags in enumerate(heatmap):
+            if i % 2 == 0:
+                row = f" L{i:02d} : "
+                for j, mag in enumerate(layer_mags[-15:]):
+                    color = probability_to_color(mag / max_magnitude)
+                    row += f"[on {color}]{' ' * len(recent_tokens[j])}[/on] "
+                legend_parts.append(row)
+
+        legend_parts.append("\n[bold]Hotkeys:[/bold] [yellow]ctrl+j[/yellow]/[yellow]ctrl+k[/yellow] to move cursor, [yellow]n[/yellow]/[yellow]b[/yellow] to change layer")
+
+        prompt_legend = "\n".join(legend_parts)
+        
+        return prompt_text, prompt_legend
     
     def render_layer_legend(self, layer_mode, tokens_to_show):
         """Render layer heatmap legend if enabled"""

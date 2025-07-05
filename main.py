@@ -46,7 +46,7 @@ MAX_PROMPTS = config["prompt"]["max_prompts"]
 class TokenExplorer(App):
     """Main application class."""
 
-    display_modes = cycle(["prompt", "prob", "entropy", "influence", "local_bias", "energy", "hidden_state_similarity"])
+    display_modes = cycle(["prompt", "prob", "entropy", "influence", "local_bias", "energy", "hidden_state_similarity", "residual_stream"])
     display_mode = reactive(next(display_modes))
     layer_display_mode = cycle(["none", "prob", "corr"])  # None, probabilities, correlations
     current_layer_mode = reactive(next(layer_display_mode))
@@ -149,6 +149,8 @@ class TokenExplorer(App):
             prompt_text, prompt_legend = self.ui_adapter.render_energy_display(cursor_pos)
         elif self.display_mode == "hidden_state_similarity":
             prompt_text, prompt_legend = self.ui_adapter.render_hidden_state_similarity_display(cursor_pos)
+        elif self.display_mode == "residual_stream":
+            prompt_text, prompt_legend = self.ui_adapter.render_residual_stream_display(cursor_pos, self.current_layer)
         else:
             # For plain prompt mode, show cursor only if visible
             tokens = self.ui_adapter.get_prompt_tokens_display()
@@ -361,14 +363,14 @@ class TokenExplorer(App):
 
     def action_next_layer(self):
         """Go to the next layer in cross-layer feature view."""
-        if self.display_mode == "cross_layer_features":
+        if self.display_mode in ["residual_stream", "hidden_state_similarity"]:
             num_layers = self.explorer.model.config.num_hidden_layers
             self.current_layer = (self.current_layer + 1) % num_layers
             self.query_one("#results", Static).update(self._render_prompt())
 
     def action_prev_layer(self):
         """Go to the previous layer in cross-layer feature view."""
-        if self.display_mode == "cross_layer_features":
+        if self.display_mode in ["residual_stream", "hidden_state_similarity"]:
             num_layers = self.explorer.model.config.num_hidden_layers
             self.current_layer = (self.current_layer - 1 + num_layers) % num_layers
             self.query_one("#results", Static).update(self._render_prompt())

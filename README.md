@@ -184,6 +184,12 @@ Displays the Helmholtz free energy for each token, identifying tokens that may b
 ### 7. Hidden State Similarity
 Visualizes how a token's representation evolves across the model's layers. It does this by calculating the cosine similarity of the token's hidden state at each layer with its hidden state at the final layer. This provides a real, data-driven view of how the model's understanding of a token converges as it passes through the network.
 
+### 8. Residual Stream Analysis
+Provides a comprehensive view of the model's residual stream, including:
+- **Layer-wise Magnitude**: Shows the L2 norm of the residual stream for a selected token at each layer.
+- **Information Flow Heatmap**: Visualizes the magnitude of the residual stream for all tokens across all layers.
+- **Component Contributions**: Displays an estimated breakdown of how much the attention and MLP components contribute to the residual stream at a given layer.
+
 How it works:
 1. Computes energy as `-T * logsumexp(logits / T)` for each token position
 2. Normalizes values to create an intuitive heatmap

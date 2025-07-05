@@ -19,6 +19,7 @@ except ImportError:
     GEMMA3_AVAILABLE = False
 
 from src.hidden_state_analysis import HiddenStateAnalyzer
+from src.residual_stream_analysis import ResidualStreamAnalyzer
 
 class Explorer:
     def __init__(self, model_name="Qwen/Qwen2.5-0.5B", use_bf16=False, enable_layer_prob=False, seed=None):
@@ -82,6 +83,7 @@ class Explorer:
         self.enable_layer_prob = enable_layer_prob
         
         self.hidden_state_analyzer = HiddenStateAnalyzer(self.model)
+        self.residual_stream_analyzer = ResidualStreamAnalyzer(self.model)
             
         # Constants for token influence calculation
         # Estimate total heads based on model architecture
@@ -105,6 +107,21 @@ class Explorer:
         """Get hidden state similarities across all layers for a specific token position"""
         input_ids = torch.tensor([self.prompt_tokens]).to(self.device)
         return self.hidden_state_analyzer.analyze_token_evolution(input_ids, token_position)
+
+    def get_residual_stream_magnitudes(self, token_position=None):
+        """Get residual stream magnitudes across all layers for a specific token position"""
+        input_ids = torch.tensor([self.prompt_tokens]).to(self.device)
+        return self.residual_stream_analyzer.get_residual_stream_magnitudes(input_ids, token_position)
+
+    def get_information_flow_heatmap(self):
+        """Get the information flow heatmap for the current prompt."""
+        input_ids = torch.tensor([self.prompt_tokens]).to(self.device)
+        return self.residual_stream_analyzer.get_information_flow_heatmap(input_ids)
+
+    def get_component_contributions(self, token_position=None, layer=0):
+        """Get component contributions for a specific token and layer."""
+        input_ids = torch.tensor([self.prompt_tokens]).to(self.device)
+        return self.residual_stream_analyzer.get_component_contributions(input_ids, token_position, layer)
     
     def _manage_cache(self, key: Tuple[int, ...], value: Tuple[List[torch.Tensor], Dict[int, List[float]], Dict[int, List[float]]]):
         """
