@@ -1,5 +1,6 @@
 from itertools import cycle
 from src.explorer import Explorer
+from src.sae_manager import SAEManager
 from src.ui_adapter import UIDataAdapter
 from src.utils import entropy_to_color, probability_to_color
 from textual.app import App, ComposeResult
@@ -15,6 +16,10 @@ import random
 import time
 import torch
 import numpy as np
+import threading
+from queue import Queue, Empty
+import threading
+from queue import Queue, Empty
 
 # Replace the constants with config
 def load_config(config_file="config.toml"):
@@ -46,7 +51,7 @@ MAX_PROMPTS = config["prompt"]["max_prompts"]
 class TokenExplorer(App):
     """Main application class."""
 
-    display_modes = cycle(["prompt", "prob", "entropy", "influence", "local_bias", "energy", "gradient_attribution", "hidden_state_similarity", "residual_stream"])
+    display_modes = cycle(["prompt", "prob", "entropy", "influence", "local_bias", "energy", "gradient_attribution", "hidden_state_similarity", "residual_stream", "feature_activations"])
     display_mode = reactive(next(display_modes))
     layer_display_mode = cycle(["none", "prob", "corr"])  # None, probabilities, correlations
     current_layer_mode = reactive(next(layer_display_mode))
@@ -63,7 +68,8 @@ class TokenExplorer(App):
                 ("x", "save_prompt", "Save"),
                 ("j", "select_next", "Down"),
                 ("k", "select_prev", "Up"),
-                ("p", "toggle_layer_display", "Layer"),
+                ("p", "cycle_sae_layer", "SAE Layer"),
+                ("ctrl+p", "toggle_layer_display", "Layer Prob"),
                 ("z", "toggle_z_scores", "Z-Score"),
                 ("ctrl+r", "reset_prompt", "Reset"),
                 ("c", "toggle_cursor", "Cursor"),
@@ -80,7 +86,7 @@ class TokenExplorer(App):
     
     # No custom commands class needed
     
-    def __init__(self, prompt=EXAMPLE_PROMPT, use_bf16=False, enable_layer_prob=False, seed=None):
+    def __init__(self, sae_manager, prompt=EXAMPLE_PROMPT, use_bf16=False, enable_layer_prob=False, seed=None, sae_enabled=False):
         super().__init__()
         self.seed = seed
         self.title = f"TokenExplorer - {MODEL_NAME} - Seed: {self.seed}"
@@ -88,7 +94,9 @@ class TokenExplorer(App):
         self.prompts = [prompt]
         self.original_prompt = prompt  # Store original prompt for reset
         self.prompt_index = 0
-        self.explorer = Explorer(MODEL_NAME, use_bf16=use_bf16, enable_layer_prob=enable_layer_prob)
+        self.explorer = Explorer(MODEL_NAME, sae_manager=sae_manager, use_bf16=use_bf16, enable_layer_prob=enable_layer_prob)
+        if sae_enabled:
+            self.display_mode = "feature_activations"
         self.explorer.set_prompt(prompt)
         self.ui_adapter = UIDataAdapter(self.explorer)  # Add UI adapter
         self.rows = self.ui_adapter.get_table_rows(
@@ -104,6 +112,20 @@ class TokenExplorer(App):
         # Initialize cursor visibility (on by default)
         self.cursor_visible = True
         self.current_layer = 0
+
+        # For asynchronous SAE computation
+        self.sae_request_queue = Queue()
+        self.sae_result_queue = Queue()
+        self.sae_worker_thread = None
+        if sae_enabled:
+            self.sae_worker_thread = threading.Thread(target=self.sae_worker, daemon=True)
+            self.sae_worker_thread.start()
+        self.sae_request_queue = Queue()
+        self.sae_result_queue = Queue()
+        self.sae_worker_thread = None
+        if sae_enabled:
+            self.sae_worker_thread = threading.Thread(target=self.sae_worker, daemon=True)
+            self.sae_worker_thread.start()
     
         
     def compose(self) -> ComposeResult:
@@ -115,11 +137,17 @@ class TokenExplorer(App):
 
     def _refresh_table(self):
         table = self.query_one(DataTable)
-        self.rows = self.ui_adapter.get_table_rows(
-            self.explorer.get_top_n_tokens(n=TOKENS_TO_SHOW),
-            show_z_scores=self.show_z_scores,
-            layer_mode=self.current_layer_mode
-            )
+        if self.display_mode == "feature_activations":
+            activations = self.explorer.get_sae_feature_activations(self.token_cursor_position)
+            self.rows = self.ui_adapter.get_feature_table_rows(activations, n=TOKENS_TO_SHOW)
+            if not self.rows or len(self.rows) <= 1:  # Only headers
+                self.rows = [("Feature ID", "Activation"), ("No features found.", "")]
+        else:
+            self.rows = self.ui_adapter.get_table_rows(
+                self.explorer.get_top_n_tokens(n=TOKENS_TO_SHOW),
+                show_z_scores=self.show_z_scores,
+                layer_mode=self.current_layer_mode
+                )
         # Clear both columns and rows
         table.clear()
         table.columns.clear()
@@ -153,6 +181,8 @@ class TokenExplorer(App):
             prompt_text, prompt_legend = self.ui_adapter.render_hidden_state_similarity_display(cursor_pos)
         elif self.display_mode == "residual_stream":
             prompt_text, prompt_legend = self.ui_adapter.render_residual_stream_display(cursor_pos, self.current_layer)
+        elif self.display_mode == "feature_activations":
+            prompt_text, prompt_legend = self.ui_adapter.render_feature_activations_display(cursor_pos)
         else:
             # For plain prompt mode, show cursor only if visible
             tokens = self.ui_adapter.get_prompt_tokens_display()
@@ -178,6 +208,10 @@ class TokenExplorer(App):
             cursor_info = f" | [bold]Cursor:[/bold] {self.token_cursor_position+1}/{len(self.explorer.prompt_tokens)} \"{current_token}\"{hotkey_info}"
         else:
             cursor_info = ""
+        
+        if self.display_mode == "feature_activations" and self.explorer.current_sae_layer is not None:
+            cursor_info += f" | [bold]SAE Layer:[/bold] {self.explorer.current_sae_layer}"
+
 
         return dedent(f"""
 {prompt_text}
@@ -198,6 +232,71 @@ class TokenExplorer(App):
         table.add_columns(*self.rows[0])
         table.add_rows(self.rows[1:])
         table.cursor_type = "row"
+        if self.sae_worker_thread: # Only set interval if SAE is enabled
+            self.set_interval(0.1, self.check_sae_results)
+            # Initial request for SAE features if in feature_activations mode
+            if self.display_mode == "feature_activations":
+                self.sae_request_queue.put(self.token_cursor_position)
+                self._show_loading_features() # Show loading immediately
+
+    def sae_worker(self):
+        while True:
+            try:
+                token_position = self.sae_request_queue.get()
+                print(f"SAE Worker: Processing request for token position {token_position}")
+                activations = self.explorer.get_sae_feature_activations(token_position)
+                self.sae_result_queue.put(activations)
+                print(f"SAE Worker: Finished processing for token position {token_position}. Found {len(activations)} features.")
+            except Exception as e:
+                print(f"SAE Worker Error: {e}")
+                self.sae_result_queue.put(f"Error: {e}") # Put error message into queue
+                with open("worker_errors.log", "a") as f:
+                    f.write(f"{datetime.now()}: {e}\n")
+
+    def check_sae_results(self):
+        try:
+            result = self.sae_result_queue.get_nowait()
+            if isinstance(result, str) and result.startswith("Error:"):
+                error_message = result
+                print(f"UI: Received error from SAE worker: {error_message}")
+                self.rows = [("Feature ID", "Activation"), ("Error loading features.", error_message)]
+            else:
+                activations = result
+                print(f"UI: Received SAE results. Updating table with {len(activations)} features.")
+                self.rows = self.ui_adapter.get_feature_table_rows(activations, n=TOKENS_TO_SHOW)
+                if not self.rows or len(self.rows) <= 1:
+                    self.rows = [("Feature ID", "Activation"), ("No features found.", "")]
+            
+            table = self.query_one(DataTable)
+            table.clear()
+            table.columns.clear()
+            table.add_columns(*self.rows[0])
+            table.add_rows(self.rows[1:])
+            self.selected_row = 0
+            table.move_cursor(row=self.selected_row)
+        except Empty:
+            pass
+        except Exception as e:
+            print(f"UI Update Error: {e}")
+            # Fallback to "Error" message
+            table = self.query_one(DataTable)
+            table.clear()
+            table.columns.clear()
+            self.rows = [("Feature ID", "Activation"), ("Critical UI Error.", str(e))]
+            table.add_columns(*self.rows[0])
+            table.add_rows(self.rows[1:])
+            self.selected_row = 0
+            table.move_cursor(row=self.selected_row)
+
+    def _show_loading_features(self):
+        table = self.query_one(DataTable)
+        table.clear()
+        table.columns.clear()
+        self.rows = [("Feature ID", "Activation"), ("Loading features...", "")]
+        table.add_columns(*self.rows[0])
+        table.add_rows(self.rows[1:])
+        self.selected_row = 0
+        table.move_cursor(row=self.selected_row)
     
     def action_add_prompt(self):
         if len(self.prompts) < MAX_PROMPTS:
@@ -233,7 +332,19 @@ class TokenExplorer(App):
 
     def action_change_display_mode(self):
         self.display_mode = next(self.display_modes)
+        self._refresh_table()
         self.query_one("#results", Static).update(self._render_prompt())
+
+    def action_cycle_sae_layer(self):
+        """Cycle through available SAE layers."""
+        if self.explorer.sae_available_layers:
+            current_idx = self.explorer.sae_available_layers.index(self.explorer.current_sae_layer)
+            next_idx = (current_idx + 1) % len(self.explorer.sae_available_layers)
+            self.explorer.current_sae_layer = self.explorer.sae_available_layers[next_idx]
+            if self.display_mode == "feature_activations":
+                self.sae_request_queue.put(self.token_cursor_position)
+                self._show_loading_features() # Show loading immediately
+            self.query_one("#results", Static).update(self._render_prompt())
 
     def action_toggle_layer_display(self):
         """Toggle layer display mode (none -> probabilities -> correlations)"""
@@ -266,7 +377,11 @@ class TokenExplorer(App):
             max_pos = len(self.explorer.get_prompt_tokens()) - 1
             self.token_cursor_position = min(self.token_cursor_position, max_pos)
             self.query_one("#results", Static).update(self._render_prompt())
-            self._refresh_table()
+            if self.display_mode == "feature_activations":
+                self.sae_request_queue.put(self.token_cursor_position)
+                self._show_loading_features() # Show loading immediately
+            else:
+                self._refresh_table()
             
     def action_save_prompt(self):
         with open(f"prompts/prompt_{self.prompt_index}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt", "w") as f:
@@ -292,7 +407,11 @@ class TokenExplorer(App):
         if table.cursor_row is not None:
             self.explorer.append_token(self.rows[table.cursor_row+1][0])
             self.prompts[self.prompt_index] = self.explorer.get_prompt()
-            self._refresh_table()  # This will reset cursor position
+            if self.display_mode == "feature_activations":
+                self.sae_request_queue.put(self.token_cursor_position)
+                self._show_loading_features() # Show loading immediately
+            else:
+                self._refresh_table()  # This will reset cursor position
             
     def action_reset_prompt(self):
         """Reset prompt to original state"""
@@ -300,7 +419,11 @@ class TokenExplorer(App):
         self.prompts[self.prompt_index] = self.original_prompt
         self.token_cursor_position = 0  # Reset cursor position
         self.query_one("#results", Static).update(self._render_prompt())
-        self._refresh_table()
+        if self.display_mode == "feature_activations":
+            self.sae_request_queue.put(self.token_cursor_position)
+            self._show_loading_features() # Show loading immediately
+        else:
+            self._refresh_table()
 
     # New VIM-inspired token cursor navigation methods
     def action_cursor_next(self):
@@ -309,12 +432,18 @@ class TokenExplorer(App):
         if self.token_cursor_position < max_pos:
             self.token_cursor_position += 1
             self.query_one("#results", Static).update(self._render_prompt())
+            if self.display_mode == "feature_activations":
+                self.sae_request_queue.put(self.token_cursor_position)
+                self._show_loading_features() # Show loading immediately
 
     def action_cursor_prev(self):
         """Move cursor to previous token (VIM-inspired)"""
         if self.token_cursor_position > 0:
             self.token_cursor_position -= 1
             self.query_one("#results", Static).update(self._render_prompt())
+            if self.display_mode == "feature_activations":
+                self.sae_request_queue.put(self.token_cursor_position)
+                self._show_loading_features() # Show loading immediately
 
     def action_cursor_word_forward(self):
         """Move cursor to next word boundary (VIM w)"""
@@ -332,6 +461,9 @@ class TokenExplorer(App):
         
         self.token_cursor_position = min(current_pos, max_pos)
         self.query_one("#results", Static).update(self._render_prompt())
+        if self.display_mode == "feature_activations":
+            self.sae_request_queue.put(self.token_cursor_position)
+            self._show_loading_features() # Show loading immediately
 
     def action_cursor_word_back(self):
         """Move cursor to previous word boundary (VIM b)"""
@@ -348,16 +480,25 @@ class TokenExplorer(App):
         
         self.token_cursor_position = max(current_pos, 0)
         self.query_one("#results", Static).update(self._render_prompt())
+        if self.display_mode == "feature_activations":
+            self.sae_request_queue.put(self.token_cursor_position)
+            self._show_loading_features() # Show loading immediately
 
     def action_cursor_start(self):
         """Move cursor to start of prompt (VIM 0)"""
         self.token_cursor_position = 0
         self.query_one("#results", Static).update(self._render_prompt())
+        if self.display_mode == "feature_activations":
+            self.sae_request_queue.put(self.token_cursor_position)
+            self._show_loading_features() # Show loading immediately
 
     def action_cursor_end(self):
         """Move cursor to end of prompt (VIM $)"""
         self.token_cursor_position = len(self.explorer.get_prompt_tokens()) - 1
         self.query_one("#results", Static).update(self._render_prompt())
+        if self.display_mode == "feature_activations":
+            self.sae_request_queue.put(self.token_cursor_position)
+            self._show_loading_features() # Show loading immediately
 
     def action_toggle_cursor(self):
         """Toggle cursor visibility on/off"""
@@ -391,7 +532,14 @@ if __name__ == "__main__":
     config = load_config(args.config)
     # Update the global variables with values from the config file
     MODEL_NAME = config["model"]["name"]
+    ENABLE_SAE = config["model"].get("enable_sae", False)
+    SAE_CONFIGS = config.get("sae", [])
     EXAMPLE_PROMPT = config["prompt"]["example_prompt"]
+    
+    # If SAE is enabled but no SAE configs are found, disable SAE
+    if ENABLE_SAE and not SAE_CONFIGS:
+        print("Warning: SAE is enabled but no SAE configurations found. Disabling SAE mode.")
+        ENABLE_SAE = False
     TOKENS_TO_SHOW = config["display"]["tokens_to_show"]
     MAX_PROMPTS = config["prompt"]["max_prompts"]
 
@@ -418,6 +566,12 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Error reading file: {e}")
             sys.exit(1)
+
+    # Instantiate and load SAEs
+    sae_manager = None
+    if ENABLE_SAE:
+        sae_manager = SAEManager(SAE_CONFIGS)
+        sae_manager.load_saes()
         
-    app = TokenExplorer(prompt=prompt, use_bf16=args.bf16, enable_layer_prob=args.layer_prob, seed=seed)
+    app = TokenExplorer(prompt=prompt, sae_manager=sae_manager, use_bf16=args.bf16, enable_layer_prob=args.layer_prob, seed=seed, sae_enabled=ENABLE_SAE)
     app.run()

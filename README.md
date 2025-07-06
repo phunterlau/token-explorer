@@ -201,7 +201,24 @@ This visualization helps identify:
 - Potential errors or inconsistencies in the model's understanding
 - Points where the model might be uncertain or confused
 
-### 9. Gradient-Based Attribution Analysis
+### 9. Sparse Autoencoder (SAE) Feature Activations
+
+This feature, inspired by the groundbreaking work on [circuit-tracer](https://github.com/safety-research/circuit-tracer) and the concept of Sparse Autoencoders (SAEs) from [Anthropic's research](https://transformer-circuits.pub/2023/sae/index.html), allows you to peer into the latent space of the model and observe the activation of individual SAE features. SAEs decompose the dense hidden states of an LLM into a sparse set of interpretable features, offering a deeper understanding of the model's internal representations.
+
+**Key Features**:
+- **Feature Visualization**: Displays the top-activating SAE features for the token currently under the cursor.
+- **Layer Exploration**: Cycle through different SAE layers to see how features activate at various depths of the model.
+- **Asynchronous Computation**: Feature activations are computed in a background thread, ensuring the UI remains responsive and preventing freezing.
+- **Two-Level Caching**: Utilizes both in-memory and disk caching to store computed activations, significantly speeding up subsequent access to the same token/layer combinations.
+- **Loading Indicator**: A "Loading features..." message provides clear feedback while computations are in progress.
+
+**Usage**:
+- When in "Feature Activations" mode (cycle with `e`), use `Ctrl+j`/`Ctrl+k` (or `Ctrl+w`/`Ctrl+b`, `Ctrl+0`/`Ctrl+$`) to move the cursor and see the SAE features for the selected token.
+- Press `p` to cycle through the available SAE layers.
+
+**Color scale**: Higher activation values indicate a stronger presence of that feature.
+
+### 10. Gradient-Based Attribution Analysis
 This feature, inspired by the work on `circuit-tracer`, provides a powerful way to understand which input tokens are most influential in predicting a subsequent token. It uses gradient-based methods to attribute the model's prediction to the input tokens.
 
 **Key Features**:
@@ -307,9 +324,27 @@ Token Explorer can be configured through the `config.toml` file. Here are the ke
 ```toml
 [model]
 name = "Qwen/Qwen2.5-0.5B"  # Model to use
+enable_sae = false          # Master switch for SAE features (set to true to enable)
 ```
 
 **Note**: Token Explorer works best with smaller models due to performance considerations. Larger models will work but may be slower.
+
+### SAE Settings
+```toml
+# Example SAE configuration for Llama-3.2-1B, layer 8
+# See: https://huggingface.co/mntss/skip-transcoder-Llama-3.2-1B-131k-nobos
+[[sae]]
+layer = 8
+repo_id = "mntss/skip-transcoder-Llama-3.2-1B-131k-nobos"
+filename = "layer_8.safetensors"
+revision = "new-training"
+```
+**Performance Considerations for SAEs**:
+SAE feature activation computation can be highly resource-intensive. For optimal performance:
+- **GPU/MPS is Highly Recommended**: Running on CPU will be significantly slower and may lead to freezing. Ensure you have a CUDA-enabled GPU or an Apple Silicon Mac (which uses MPS).
+- **Model Size**: Smaller models (e.g., 1B-2B parameters) are more suitable for interactive SAE analysis.
+- **Number of Layers**: Loading fewer SAE layers (e.g., 1-3 layers) will drastically improve responsiveness. Loading many layers can consume significant VRAM and slow down the application.
+- **Caching**: Token Explorer utilizes a two-level caching system (in-memory and disk) to speed up repeated access to the same feature activations. The first computation for a new token/layer will still incur a delay.
 
 ### Prompt Settings
 ```toml
@@ -337,12 +372,12 @@ uv run main.py --config config_gemma.toml
 
 Token Explorer is a powerful tool for understanding LLM behavior, with applications including:
 
-1. **Interpretability Research**: Visualize and analyze how models process and generate text
-2. **Model Debugging**: Identify where models make mistakes or exhibit unexpected behavior
-3. **Prompt Engineering**: Develop and test different prompting strategies
-4. **Educational Tool**: Learn about token-based generation and transformer architecture
-5. **Out-of-Distribution Detection**: Identify when models encounter unfamiliar content
-6. **Attention Analysis**: Understand which parts of input text influence model predictions
-7. **Layer-wise Behavior**: Study how information flows through the model's layers
+1. **Interpretability Research**: Visualize and analyze how models process and generate text, including the activation of sparse autoencoder features.
+2. **Model Debugging**: Identify where models make mistakes or exhibit unexpected behavior.
+3. **Prompt Engineering**: Develop and test different prompting strategies.
+4. **Educational Tool**: Learn about token-based generation, transformer architecture, and the role of SAEs.
+5. **Out-of-Distribution Detection**: Identify when models encounter unfamiliar content.
+6. **Attention Analysis**: Understand which parts of input text influence model predictions.
+7. **Layer-wise Behavior**: Study how information flows through the model's layers and how SAE features contribute at each stage.
 
 By providing an interactive, visual interface to explore these aspects of LLM behavior, Token Explorer bridges the gap between theoretical understanding and practical insights into how these models work.

@@ -10,6 +10,7 @@ import tomli
 from typing import Dict, List, Tuple, Optional
 from collections import OrderedDict
 from functools import lru_cache
+import os
 
 # Import Gemma3 specific classes
 try:
@@ -23,18 +24,20 @@ from src.residual_stream_analysis import ResidualStreamAnalyzer
 from src.gradient_attribution import GradientAttribution
 
 class Explorer:
-    def __init__(self, model_name="Qwen/Qwen2.5-0.5B", use_bf16=False, enable_layer_prob=False, seed=None):
+    def __init__(self, model_name="Qwen/Qwen2.5-0.5B", sae_manager=None, use_bf16=False, enable_layer_prob=False, seed=None):
         """
         Initialize the Explorer with a model name.
         
         Args:
             model_name: Name of the model to load (default "Qwen/Qwen2.5-0.5B")
+            sae_manager: An instance of SAEManager (default None)
             use_bf16: Whether to load model in bf16 precision (default False)
             enable_layer_prob: Whether to enable layer probability and correlation calculations (default False)
             seed: Random seed for generation (default None)
         """
         self.model_name = model_name
         self.seed = seed
+        self.sae_manager = sae_manager
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         
         # Auto select device (CUDA > MPS > CPU)
@@ -44,6 +47,8 @@ class Explorer:
             self.device = torch.device("mps")
         else:
             self.device = torch.device("cpu")
+        
+        print(f"--- Using device: {self.device} ---")
             
         # Create a PyTorch generator with the provided seed for deterministic generation
         if self.seed is not None:
@@ -86,6 +91,14 @@ class Explorer:
         self.hidden_state_analyzer = HiddenStateAnalyzer(self.model)
         self.residual_stream_analyzer = ResidualStreamAnalyzer(self.model)
         self.gradient_attribution = GradientAttribution(self.model, self.tokenizer)
+
+        # SAE-related attributes
+        if self.sae_manager:
+            self.sae_available_layers = self.sae_manager.get_available_layers()
+            self.current_sae_layer = self.sae_available_layers[0] if self.sae_available_layers else None
+        else:
+            self.sae_available_layers = []
+            self.current_sae_layer = None
             
         # Constants for token influence calculation
         # Estimate total heads based on model architecture
@@ -104,6 +117,59 @@ class Explorer:
         # token_correlations is dict mapping token_id to correlation list
         # token_influences is dict mapping token_id to influence list
         self._cache: OrderedDict[Tuple[int, ...], Tuple[List[torch.Tensor], Dict[int, List[float]], Dict[int, List[float]]]] = OrderedDict()
+        self._sae_cache: Dict[Tuple[int, int], List[Tuple[int, float]]] = {}
+        self._sae_disk_cache = {}
+        try:
+            if os.path.exists("sae_disk_cache.pt"):
+                self._sae_disk_cache = torch.load("sae_disk_cache.pt")
+                print("Loaded SAE disk cache.")
+        except Exception as e:
+            print(f"Error loading SAE disk cache: {e}")
+            self._sae_disk_cache = {}
+
+
+    def get_sae_feature_activations(self, token_position):
+        """
+        Get SAE feature activations for a specific token and the current SAE layer.
+        """
+        if not self.sae_manager or self.current_sae_layer is None or token_position is None:
+            print(f"SAE Manager not ready: sae_manager={self.sae_manager}, current_sae_layer={self.current_sae_layer}, token_position={token_position}")
+            return []
+
+        # In-memory cache
+        cache_key = (self.current_sae_layer, token_position, tuple(self.prompt_tokens))
+        if cache_key in self._sae_cache:
+            print(f"SAE Cache Hit (in-memory) for layer {self.current_sae_layer}, token_pos {token_position}")
+            return self._sae_cache[cache_key]
+
+        # Disk cache
+        if cache_key in self._sae_disk_cache:
+            print(f"SAE Cache Hit (disk) for layer {self.current_sae_layer}, token_pos {token_position}")
+            self._sae_cache[cache_key] = self._sae_disk_cache[cache_key]
+            return self._sae_disk_cache[cache_key]
+
+        print(f"SAE Cache Miss for layer {self.current_sae_layer}, token_pos {token_position}. Computing...")
+        input_ids = torch.tensor([self.prompt_tokens]).to(self.device)
+        
+        # We need the hidden state from the specified layer
+        with torch.no_grad():
+            outputs = self.model(input_ids, output_hidden_states=True)
+            hidden_states = outputs.hidden_states[self.current_sae_layer]
+            token_hidden_state = hidden_states[0, token_position, :].unsqueeze(0)
+
+        activations = self.sae_manager.get_feature_activations(self.current_sae_layer, token_hidden_state)
+        
+        # Update caches
+        self._sae_cache[cache_key] = activations
+        self._sae_disk_cache[cache_key] = activations
+        try:
+            torch.save(self._sae_disk_cache, "sae_disk_cache.pt")
+            print("SAE disk cache saved.")
+        except Exception as e:
+            print(f"Error saving SAE disk cache: {e}")
+        
+        print(f"SAE computation complete for layer {self.current_sae_layer}, token_pos {token_position}. Found {len(activations)} features.")
+        return activations
 
     def get_hidden_state_similarities(self, token_position=None):
         """Get hidden state similarities across all layers for a specific token position"""

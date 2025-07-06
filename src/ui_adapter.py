@@ -97,6 +97,35 @@ class UIDataAdapter:
             rows.append(tuple(row))
         
         return [tuple(headers)] + rows
+
+    def get_feature_table_rows(self, activations, n=30):
+        """Convert feature activation data to table format."""
+        headers = ("Feature ID", "Activation")
+        rows = []
+        for feature_id, activation_value in activations[:n]:
+            rows.append((str(feature_id), f"{activation_value:.4f}"))
+        return [headers] + rows
+
+    def render_feature_activations_display(self, cursor_position=None):
+        """Render feature activations visualization."""
+        token_strings = self.get_prompt_tokens_display()
+        
+        if cursor_position is None or cursor_position >= len(token_strings):
+            prompt_text = "".join(token_strings)
+            prompt_legend = "[bold]Press 'c' to enable cursor and see SAE feature activations.[/bold]"
+            return prompt_text, prompt_legend
+
+        prompt_parts = []
+        for i, token in enumerate(token_strings):
+            if i == cursor_position:
+                prompt_parts.append(f"[on blue]\\[{token}\\][/on]")
+            else:
+                prompt_parts.append(token)
+        
+        prompt_text = "".join(prompt_parts)
+        prompt_legend = f"[bold]Top SAE Feature Activations for '[u]{token_strings[cursor_position]}[/u]'[/bold]"
+        
+        return prompt_text, prompt_legend
     
     def render_entropy_display(self, cursor_position=None):
         """Render entropy visualization with optional cursor"""
